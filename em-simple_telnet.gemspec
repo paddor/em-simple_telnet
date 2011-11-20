@@ -10,5 +10,8 @@ Gem::Specification.new do |s|
   s.authors     = ["Patrik Wenger"]
   s.email       = ["paddor@gmail.com"]
   s.homepage    = "http://github.com/paddor/em-simple_telnet"
-  s.files       = ["lib/em-simple_telnet.rb"]
+  s.files       = ["README", "lib/em-simple_telnet.rb"]
+  s.extra_rdoc_files = ['README']
+  s.add_dependency('eventmachine', '>= 1.0.0.beta.2')
+  s.has_rdoc = true
 end
