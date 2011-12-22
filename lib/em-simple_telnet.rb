@@ -627,7 +627,7 @@ class EventMachine::Protocols::SimpleTelnet < EventMachine::Connection
         @connection_state_callback.call(output)
       end
 
-      if s = @telnet_options[:wait_time]
+      if s = @telnet_options[:wait_time] and s > 0
         # fire @connection_state_callback after s seconds
         @wait_time_timer = EventMachine::Timer.new(s, &blk)
       else
