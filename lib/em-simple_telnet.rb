@@ -15,27 +15,18 @@ require "eventmachine"
 # still working on a deferred action or not.
 #
 module EventMachine # :nodoc:
-  def self.defers_finished?
-    (not defined? @threadqueue or (tq=@threadqueue).nil? or tq.empty? ) and
-    (not defined? @resultqueue or (rq=@resultqueue).nil? or rq.empty? ) and
-    (not defined? @threadpool  or (tp=@threadpool).nil? or tp.none? {|t|t[:working]})
-  end
+  # ensure they're always defined
+  @threadpool = @threadqueue = @resultqueue = nil
 
-  def self.spawn_threadpool
-    until @threadpool.size == @threadpool_size.to_i
-      thread = Thread.new do
-        Thread.current.abort_on_exception = true
-        while true
-          Thread.current[:working] = false
-          op, cback = *@threadqueue.pop
-          Thread.current[:working] = true
-          result = op.call
-          @resultqueue << [result, cback]
-          EventMachine.signal_loopbreak
-        end
-      end
-      @threadpool << thread
-    end
+  ##
+  # Returns +true+ if all deferred actions are done executing and their
+  # callbacks have been fired.
+  #
+  def self.defers_finished?
+    return false if @threadqueue and not @threadqueue.empty?
+    return false if @resultqueue and not @resultqueue.empty?
+    return false if @threadpool and @threadqueue.num_waiting != @threadpool.size
+    return true
   end
 end
 
