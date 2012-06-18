@@ -565,7 +565,7 @@ class EventMachine::Protocols::SimpleTelnet < EventMachine::Connection
     # we only need to do something if there's a connection state callback
     return unless @connection_state_callback
 
-    # we ensure there's no timer running to check the input buffer
+    # we ensure there's no timer running for checking the input buffer
     if @check_input_buffer_timer
       @check_input_buffer_timer.cancel
       @check_input_buffer_timer = nil
@@ -579,9 +579,9 @@ class EventMachine::Protocols::SimpleTelnet < EventMachine::Connection
       # We postpone checking the input buffer by one second because the regular
       # expression matches can get quite slow.
       #
-      # So as long as data is received (continuously), the input buffer is not
-      # checked. It's only checked one second after the whole output has been
-      # received.
+      # So as long as data is being received (continuously), the input buffer
+      # is not checked. It's only checked one second after the whole output
+      # has been received.
       @check_input_buffer_timer = EventMachine::Timer.new(1) do
         @check_input_buffer_timer = nil
         check_input_buffer
