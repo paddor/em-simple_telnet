@@ -610,21 +610,21 @@ class EventMachine::Protocols::SimpleTelnet < EventMachine::Connection
   # multiple prompts to be sent.
   #
   def check_input_buffer
-    if md = @input_buffer.match(@telnet_options[:prompt])
-      blk = lambda do
-        @last_prompt = md.to_s # remember last prompt
-        output = md.pre_match + @last_prompt
-        @input_buffer = md.post_match
-        @connection_state_callback.call(output)
-      end
+    return unless md = @input_buffer.match(@telnet_options[:prompt])
 
-      if s = @telnet_options[:wait_time] and s > 0
-        # fire @connection_state_callback after s seconds
-        @wait_time_timer = EventMachine::Timer.new(s, &blk)
-      else
-        # fire @connection_state_callback now
-        blk.call
-      end
+    blk = lambda do
+      @last_prompt = md.to_s # remember last prompt
+      output = md.pre_match + @last_prompt
+      @input_buffer = md.post_match
+      @connection_state_callback.call(output)
+    end
+
+    if s = @telnet_options[:wait_time] and s > 0
+      # fire @connection_state_callback after s seconds
+      @wait_time_timer = EventMachine::Timer.new(s, &blk)
+    else
+      # fire @connection_state_callback now
+      blk.call
     end
   end
 
@@ -760,8 +760,7 @@ class EventMachine::Protocols::SimpleTelnet < EventMachine::Connection
     log_command(opts[:hide] ? "<hidden command>" : command)
 
     # send the command
-    sendcmd = opts[:raw_command] ? :print : :puts
-    self.__send__(sendcmd, command)
+    opts[:raw_command] ? print(command) : puts(command)
 
     # wait for the output
     waitfor(opts[:prompt], opts)
