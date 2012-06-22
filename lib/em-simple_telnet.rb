@@ -259,10 +259,7 @@ class EventMachine::Protocols::SimpleTelnet < EventMachine::Connection
         # set callback to be executed when connection establishing
         # fails/succeeds
         f = Fiber.current
-        connection.connection_state_callback = lambda do |obj=nil|
-          @connection_state_callback = nil
-          f.resume obj
-        end
+        connection.connection_state_callback = ->(o){ f.resume(o) }
 
         # block here and get result from establishing connection
         state = Fiber.yield
@@ -603,16 +600,15 @@ class EventMachine::Protocols::SimpleTelnet < EventMachine::Connection
 
   ##
   # Checks the input buffer (<tt>@input_buffer</tt>) for the prompt we're
-  # waiting for. Calls the proc in <tt>@connection_state_callback</tt> if the
+  # waiting for. Calls #call_connection_state_callback with the output if the
   # prompt has been found. Thus, call this method *only* if
   # <tt>@connection_state_callback</tt> is set!
   #
-  # If <tt>@telnet_options[:wait_time]</tt> is set, this amount of seconds is
-  # waited (call to <tt>@connection_state_callback</tt> is scheduled) after
-  # seeing what looks like the prompt before firing the
-  # <tt>@connection_state_callback</tt> is fired, so more data can come until
-  # the real prompt is reached. This is useful for commands which will cause
-  # multiple prompts to be sent.
+  # If <tt>@telnet_options[:wait_time]</tt> is set, it will wait this amount
+  # of seconds after seeing what looks like the prompt before calling
+  # #call_connection_state_callback.  This way, more data can be received
+  # until the real prompt is received. This is useful for commands that send
+  # multiple prompts.
   #
   def check_input_buffer
     return unless md = @input_buffer.match(@telnet_options[:prompt])
@@ -621,7 +617,7 @@ class EventMachine::Protocols::SimpleTelnet < EventMachine::Connection
       @last_prompt = md.to_s # remember last prompt
       output = md.pre_match + @last_prompt
       @input_buffer = md.post_match
-      @connection_state_callback.call(output)
+      call_connection_state_callback(output)
     end
 
     if s = @telnet_options[:wait_time] and s > 0
@@ -671,10 +667,7 @@ class EventMachine::Protocols::SimpleTelnet < EventMachine::Connection
     f = Fiber.current
 
     # will be called by #receive_data to resume at "Fiber.yield" below
-    @connection_state_callback = lambda do |output|
-      @connection_state_callback = nil
-      f.resume(output)
-    end
+    @connection_state_callback = ->(output){ f.resume(output) }
 
     result = Fiber.yield
 
@@ -850,10 +843,10 @@ class EventMachine::Protocols::SimpleTelnet < EventMachine::Connection
   # Decreases <tt>@@_telnet_connection_count</tt> by one and calls #close_logs.
   #
   # After that and if <tt>@connection_state_callback</tt> is set, it takes a
-  # look on <tt>@connection_state</tt>. If it was <tt>:connecting</tt>, calls
-  # <tt>@connection_state_callback</tt> with a new instance of
-  # ConnectionFailed. If it was <tt>:waiting_for_prompt</tt>, calls the
-  # callback with a new instance of TimeoutError.
+  # look at <tt>@connection_state</tt>. If it was <tt>:connecting</tt>, calls
+  # #call_connection_state_callback with a new instance of ConnectionFailed.
+  # If it was <tt>:waiting_for_prompt</tt>, calls the same method with a new
+  # instance of TimeoutError.
   #
   # Finally, the <tt>@connection_state</tt> is set to +closed+.
   #
@@ -884,11 +877,21 @@ class EventMachine::Protocols::SimpleTelnet < EventMachine::Connection
   end
 
   ##
+  # Calls the @connection_state_callback with _obj_ and sets it to +nil+.
+  #
+  # Call this method *only* if <tt>@connection_state_callback</tt> is set!
+  #
+  def call_connection_state_callback(obj=nil)
+    callback, @connection_state_callback = @connection_state_callback, nil
+    callback.call(obj)
+  end
+
+  ##
   # Called by EventMachine after the connection is successfully established.
   #
   def connection_completed
     @connection_state = :connected
-    @connection_state_callback.call if @connection_state_callback
+    call_connection_state_callback if @connection_state_callback
   end
 
   ##
