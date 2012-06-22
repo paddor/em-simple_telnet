@@ -279,7 +279,12 @@ class EventMachine::Protocols::SimpleTelnet < EventMachine::Connection
         end
       ensure
         # close the connection in any case
-        connection.close_connection_after_writing if connection
+        if connection
+          connection.close_connection_after_writing
+
+          # give some time to send the remaining data, which should be nothing
+          EventMachine.add_timer(2) { connection.close_connection }
+        end
       end
 
       return connection
