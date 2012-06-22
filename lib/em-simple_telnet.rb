@@ -252,32 +252,37 @@ class EventMachine::Protocols::SimpleTelnet < EventMachine::Connection
         opts
       ]
 
-      # start establishing the connection
-      connection = EventMachine.connect(*params)
-
-      # set callback to be executed when connection establishing
-      # fails/succeeds
-      f = Fiber.current
-      connection.connection_state_callback = lambda do |obj=nil|
-        @connection_state_callback = nil
-        f.resume obj
-      end
-
-      # block here and get result from establishing connection
-      state = Fiber.yield
-
-      # raise if exception (e.g. Telnet::ConnectionFailed)
-      raise state if state.is_a? Exception
-
-      # login
-      connection.instance_eval { login }
-
       begin
-        yield connection
+        # start establishing the connection
+        connection = EventMachine.connect(*params)
+
+        # set callback to be executed when connection establishing
+        # fails/succeeds
+        f = Fiber.current
+        connection.connection_state_callback = lambda do |obj=nil|
+          @connection_state_callback = nil
+          f.resume obj
+        end
+
+        # block here and get result from establishing connection
+        state = Fiber.yield
+
+        # raise if exception (e.g. Telnet::ConnectionFailed)
+        raise state if state.is_a? Exception
+
+        # login
+        connection.instance_eval { login }
+
+        begin
+          yield connection
+        ensure
+          # Use #close so a subclass can execute some kind of logout command
+          # before the connection is closed.
+          connection.close
+        end
       ensure
-        # Use #close so a subclass can execute some kind of logout command
-        # before the connection is closed.
-        connection.close
+        # close the connection in any case
+        connection.close_connection_after_writing if connection
       end
 
       return connection
@@ -887,14 +892,12 @@ class EventMachine::Protocols::SimpleTelnet < EventMachine::Connection
   end
 
   ##
-  # Tells EventMachine to close the connection after sending what's in the
-  # output buffer. Redefine this method to execute some logout command like
-  # +exit+ or +logout+ before the connection is closed. Don't forget: The
-  # command will probably not return a prompt, so use #puts, which doesn't
-  # wait for a prompt.
+  # Redefine this method to execute some logout command like +exit+ or
+  # +logout+ before the connection is closed. Don't forget: The command will
+  # probably not return a prompt, so use #puts, which doesn't wait for a
+  # prompt.
   #
   def close
-    close_connection_after_writing
   end
 
   ##
