@@ -515,10 +515,8 @@ class EventMachine::Protocols::SimpleTelnet < EventMachine::Connection
   ##
   # Called by EventMachine when data is received.
   #
-  # The data is processed using #preprocess_telnet and appended to the
-  # <tt>@input_buffer</tt>. The appended data is also logged using
-  # #log_output. Then #check_input_buffer is called which checks the input
-  # buffer for the prompt.
+  # The data is processed using #preprocess_telnet. The data then logged using
+  # #log_output. Then calls #process_payload.
   #
   def receive_data data
     if @telnet_options[:telnet_mode]
@@ -559,9 +557,21 @@ class EventMachine::Protocols::SimpleTelnet < EventMachine::Connection
     # in case only telnet sequences were received
     return if buf.empty?
 
+    log_output(buf, true)
+    process_payload(buf)
+  end
+
+  ##
+  # Appends _buf_ to the <tt>@input_buffer</tt>. 
+  # Then cancels the @wait_time_timer if there was one. 
+  # Does nothing else if there's no @connection_state_callback.
+  #
+  # Does some performance optimizations in case the input buffer is becoming
+  # huge and finally calls #check_input_buffer.
+  #
+  def process_payload(buf)
     # append output from server to input buffer and log it
     @input_buffer << buf
-    log_output buf, true
 
     # cancel the timer for wait_time value because we received more data
     if @wait_time_timer
