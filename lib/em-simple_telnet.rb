@@ -874,7 +874,7 @@ class EventMachine::Protocols::SimpleTelnet < EventMachine::Connection
       # #waitfor
       case @connection_state
       when :connecting
-        @connection_state_callback.call(ConnectionFailed.new)
+        call_connection_state_callback(ConnectionFailed.new)
       when :waiting_for_prompt
         error = TimeoutError.new
 
@@ -884,7 +884,7 @@ class EventMachine::Protocols::SimpleTelnet < EventMachine::Connection
         end
         error.command = @last_command if @last_command
 
-        @connection_state_callback.call(error)
+        call_connection_state_callback(error)
       end
     end
 
