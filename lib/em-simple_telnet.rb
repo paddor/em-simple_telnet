@@ -870,9 +870,6 @@ class EventMachine::Protocols::SimpleTelnet < EventMachine::Connection
   # Call this method *only* if <tt>@connection_state_callback</tt> is set!
   #
   def call_connection_state_callback(obj=nil)
-    # FIXME: maybe this is needed to avoid FiberError's (dead fiber called).
-#    return if @connection_state_callback.nil?
-
     callback, @connection_state_callback = @connection_state_callback, nil
     callback.call(obj)
   end
