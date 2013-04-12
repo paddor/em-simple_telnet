@@ -12,6 +12,6 @@ Gem::Specification.new do |s|
   s.homepage    = "http://github.com/paddor/em-simple_telnet"
   s.files       = ["lib/em-simple_telnet.rb"]
   s.extra_rdoc_files = ['README.rdoc']
-  s.add_dependency('eventmachine', '>= 1.0.0.beta.2')
+  s.add_dependency('eventmachine', '>= 1.0.0')
   s.has_rdoc = true
 end
