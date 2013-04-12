@@ -4,33 +4,6 @@ require "socket" # for SocketError
 require "eventmachine"
 
 ##
-# This defines EventMachine::defers_finished? which is used by StopWhenEMDone
-# to stop EventMachine safely when everything is done. The method returns
-# +true+ if the @threadqueue and @resultqueue are undefined/nil/empty *and*
-# none of the threads in the threadpool isn't working anymore.
-#
-# To do this, the method ::spawn_threadpool is redefined to start threads that
-# provide a thread-local variable :working (like
-# <tt>thread_obj[:working]</tt>). This variable tells whether the thread is
-# still working on a deferred action or not.
-#
-module EventMachine # :nodoc:
-  # ensure they're always defined
-  @threadpool = @threadqueue = @resultqueue = nil
-
-  ##
-  # Returns +true+ if all deferred actions are done executing and their
-  # callbacks have been fired.
-  #
-  def self.defers_finished?
-    return false if @threadqueue and not @threadqueue.empty?
-    return false if @resultqueue and not @resultqueue.empty?
-    return false if @threadpool and @threadqueue.num_waiting != @threadpool.size
-    return true
-  end
-end
-
-##
 # Provides the facility to connect to telnet servers using EventMachine. The
 # asynchronity is hidden so you can use this library just like Net::Telnet in
 # a seemingly synchronous manner. See README for an example.
