@@ -229,19 +229,11 @@ class EventMachine::Protocols::SimpleTelnet < EventMachine::Connection
         # start establishing the connection
         connection = EventMachine.connect(*params)
 
-        # set callback to be executed when connection establishing
-        # fails/succeeds
-        f = Fiber.current
-        connection.connection_state_callback = ->(o){ f.resume(o) }
-
-        # block here and get result from establishing connection
-        state = Fiber.yield
-
-        # raise if exception (e.g. Telnet::ConnectionFailed)
-        raise state if state.is_a? Exception
+        # will be resumed by #connection_completed or #unbind
+        connection.pause_and_wait_for_result
 
         # login
-        connection.instance_eval { login }
+        connection.__send__(:login)
 
         begin
           yield connection
@@ -365,11 +357,13 @@ class EventMachine::Protocols::SimpleTelnet < EventMachine::Connection
 
     @logged_in = nil
     @connection_state = :connecting
-    @connection_state_callback = nil
+    f = Fiber.current
+    @fiber_resumer = ->(result = nil){ f.resume(result) }
     @input_buffer = ""
     @input_rest = ""
     @wait_time_timer = nil
     @check_input_buffer_timer = nil
+    @recently_received_data = "" if $DEBUG
 
     setup_logging
   end
@@ -386,8 +380,13 @@ class EventMachine::Protocols::SimpleTelnet < EventMachine::Connection
   # used telnet options Hash
   attr_reader :telnet_options
 
-  # the callback executed after connection established or failed
-  attr_accessor :connection_state_callback
+  # the callback executed again and again to resume this connection's Fiber
+  attr_accessor :fiber_resumer
+
+  def connection_state_callback
+    warn "#connection_state_callback deprecated. use #fiber_resumer instead"
+    fiber_resumer
+  end
 
   # last prompt matched
   attr_reader :last_prompt
@@ -492,6 +491,7 @@ class EventMachine::Protocols::SimpleTelnet < EventMachine::Connection
   # #log_output. Then calls #process_payload.
   #
   def receive_data data
+    @recently_received_data << data if $DEBUG
     if @telnet_options[:telnet_mode]
       c = @input_rest + data
       se_pos = c.rindex(/#{IAC}#{SE}/no) || 0
@@ -536,8 +536,8 @@ class EventMachine::Protocols::SimpleTelnet < EventMachine::Connection
 
   ##
   # Appends _buf_ to the <tt>@input_buffer</tt>. 
-  # Then cancels the @wait_time_timer if there was one. 
-  # Does nothing else if there's no @connection_state_callback.
+  # Then cancels the @wait_time_timer and @check_input_buffer_timer if they're
+  # set. 
   #
   # Does some performance optimizations in case the input buffer is becoming
   # huge and finally calls #check_input_buffer.
@@ -546,75 +546,88 @@ class EventMachine::Protocols::SimpleTelnet < EventMachine::Connection
     # append output from server to input buffer and log it
     @input_buffer << buf
 
-    # cancel the timer for wait_time value because we received more data
-    if @wait_time_timer
-      @wait_time_timer.cancel
-      @wait_time_timer = nil
-    end
+    case @connection_state
+    when :waiting_for_prompt
 
-    # we only need to do something if there's a connection state callback
-    return unless @connection_state_callback
+      # cancel the timer for wait_time value because we received more data
+      if @wait_time_timer
+        @wait_time_timer.cancel
+        @wait_time_timer = nil
+      end
 
-    # we ensure there's no timer running for checking the input buffer
-    if @check_input_buffer_timer
-      @check_input_buffer_timer.cancel
-      @check_input_buffer_timer = nil
-    end
-
-    if @input_buffer.size >= 100_000
-      ##
-      # if the input buffer is really big
-      #
-
-      # We postpone checking the input buffer by one second because the regular
-      # expression matches can get quite slow.
-      #
-      # So as long as data is being received (continuously), the input buffer
-      # is not checked. It's only checked one second after the whole output
-      # has been received.
-      @check_input_buffer_timer = EventMachine::Timer.new(1) do
+      # we ensure there's no timer running for checking the input buffer
+      if @check_input_buffer_timer
+        @check_input_buffer_timer.cancel
         @check_input_buffer_timer = nil
+      end
+
+      if @input_buffer.size >= 100_000
+        ##
+        # if the input buffer is really big
+        #
+
+        # We postpone checking the input buffer by one second because the regular
+        # expression matches can get quite slow.
+        #
+        # So as long as data is being received (continuously), the input buffer
+        # is not checked. It's only checked one second after the whole output
+        # has been received.
+        @check_input_buffer_timer = EventMachine::Timer.new(1) do
+          @check_input_buffer_timer = nil
+          check_input_buffer
+        end
+      else
+        ##
+        # as long as the input buffer is small
+        #
+
+        # check the input buffer now
         check_input_buffer
       end
+    when :listening
+      @fiber_resumer.(buf)
+    when :connected, :sleeping
+      if $VERBOSE
+        warn "#{node}: Discarding data that was received while not waiting " +
+          "for data (state = #{@connection_state.inspect}): #{buf.inspect}"
+      end
     else
-      ##
-      # as long as the input buffer is small
-      #
-
-      # check the input buffer now
-      check_input_buffer
+      raise "Don't know what to do with received data while being in " +
+        "connection state #{@connection_state.inspect}"
     end
   end
 
   ##
   # Checks the input buffer (<tt>@input_buffer</tt>) for the prompt we're
-  # waiting for. Calls #call_connection_state_callback with the output if the
-  # prompt has been found. Thus, call this method *only* if
-  # <tt>@connection_state_callback</tt> is set!
+  # waiting for. Calls @fiber_resumer with the output if the
+  # prompt has been found.
   #
   # If <tt>@telnet_options[:wait_time]</tt> is set, it will wait this amount
   # of seconds after seeing what looks like the prompt before calling
-  # #call_connection_state_callback.  This way, more data can be received
+  # @fiber_resumer.  This way, more data can be received
   # until the real prompt is received. This is useful for commands that send
   # multiple prompts.
   #
   def check_input_buffer
     return unless md = @input_buffer.match(@telnet_options[:prompt])
 
-    blk = lambda do
-      @last_prompt = md.to_s # remember last prompt
-      output = md.pre_match + @last_prompt
-      @input_buffer = md.post_match
-      call_connection_state_callback(output)
-    end
-
     if s = @telnet_options[:wait_time] and s > 0
-      # fire @connection_state_callback after s seconds
-      @wait_time_timer = EventMachine::Timer.new(s, &blk)
+      # resume Fiber after s seconds
+      @wait_time_timer = EventMachine::Timer.new(s) { process_match_data(md) }
     else
-      # fire @connection_state_callback now
-      blk.call
+      # resume Fiber now
+      process_match_data(md)
     end
+  end
+
+  # Takes out the @last_prompt from _md_ (MatchData) and remembers it.
+  # Resumes the fiber (using @fiber_resumer) with the output (which
+  # includes the prompt and everything before).
+  def process_match_data(md)
+    @last_prompt = md.to_s # remember the prompt matched
+    output = md.pre_match + @last_prompt
+    @input_buffer = md.post_match
+    @fiber_resumer.(output)
   end
 
   ##
@@ -633,6 +646,9 @@ class EventMachine::Protocols::SimpleTelnet < EventMachine::Connection
   # * +:wait_time+ (actually used by #check_input_buffer)
   #
   def waitfor prompt=nil, opts={}
+    if closed?
+      abort "Can't wait for anything when connection is already closed!"
+    end
     options_were = @telnet_options
     timeout_was = self.timeout if opts.key?(:timeout)
     opts[:prompt] = prompt if prompt
@@ -649,25 +665,76 @@ class EventMachine::Protocols::SimpleTelnet < EventMachine::Connection
 
     # so #unbind knows we were waiting for a prompt (in case that inactivity
     # timeout fires)
-    @connection_state = :waiting_for_prompt
+    self.connection_state = :waiting_for_prompt
 
-    # for the block in @connection_state_callback
-    f = Fiber.current
-
-    # will be called by #receive_data to resume at "Fiber.yield" below
-    @connection_state_callback = ->(output){ f.resume(output) }
-
-    result = Fiber.yield
-
-    raise result if result.is_a? Exception
-    return result
+    pause_and_wait_for_result
   ensure
     @telnet_options = options_were
     self.timeout = timeout_was if opts.key?(:timeout)
-    @connection_state = :connected
+
+    # #unbind could have been called in the meantime
+    self.connection_state = :connected if !closed?
   end
 
-  alias :write :send_data
+  # Pauses the current Fiber. When resumed, returns the value passed. If the
+  # value passed is an Exeption, it's raised.
+  def pause_and_wait_for_result
+    result = nil
+    while result == nil
+      # measure how long Fiber is paused
+      if $DEBUG
+        before_pause = Time.now
+        result = Fiber.yield
+        pause_duration = Time.now - before_pause
+
+        m = "#{node}: Fiber was paused for #{pause_duration * 1000}ms and " +
+          "is resumed with: #{result.inspect}"
+        result.nil? ? warn(m.red) : warn(m)
+      else
+        result = Fiber.yield
+      end
+    end
+
+
+    raise result if result.is_a? Exception
+    return result
+  end
+
+  # Identifier for this connection. Like an IP address or hostname. In this
+  # case, it's <tt>@telnet_options[:host]</tt>.
+  def node
+    @telnet_options[:host]
+  end
+
+  # Listen for anything that's received from the node. Each received chunk
+  # will be yielded to the block passed. To make it stop listening, the block
+  # should +return+ or +raise+ something.
+  #
+  # The default timeout during listening is 90 seconds. Use the option
+  # +:timeout+ to change this.
+  def listen(opts = {}, &blk)
+    self.connection_state = :listening
+    timeout(opts.fetch(:timeout, 90)) do
+      yield pause_and_wait_for_result while true
+    end
+  ensure
+    self.connection_state = :connected
+  end
+
+  # Passes argument to #send_data.
+  def write(s)
+    send_data(s)
+  end
+
+  # Raises Errno::ENOTCONN in case the connection is closed (#unbind has been
+  # called before). Also contains some debugging stuff depending on $DEBUG.
+  def send_data(s)
+    raise Errno::ENOTCONN, "Connection is already closed." if closed?
+    @last_sent_data = Time.now
+    print_recently_received_data if $DEBUG
+    warn "#{node}: Sending #{s.inspect}" if $DEBUG
+    super
+  end
 
   ##
   # Sends a string to the host.
@@ -830,56 +897,74 @@ class EventMachine::Protocols::SimpleTelnet < EventMachine::Connection
   #
   # Decreases <tt>@@_telnet_connection_count</tt> by one and calls #close_logs.
   #
-  # After that and if <tt>@connection_state_callback</tt> is set, it takes a
+  # After that is set, it takes a
   # look at <tt>@connection_state</tt>. If it was <tt>:connecting</tt>, calls
-  # #call_connection_state_callback with a new instance of ConnectionFailed.
+  # @fiber_resumer with a new instance of ConnectionFailed.
   # If it was <tt>:waiting_for_prompt</tt>, calls the same method with a new
   # instance of TimeoutError.
   #
   # Finally, the <tt>@connection_state</tt> is set to +closed+.
   #
-  def unbind
+  def unbind(reason)
+    @unbound_at = Time.now
+    prev_conn_state = @connection_state
+    self.connection_state = :closed
+    if $DEBUG
+      warn "#{node}: unbinding because of: " + reason.inspect.red.bold
+    end
+    @@unbound_at[node] = [ Time.now, prev_conn_state ]
     @@_telnet_connection_count -= 1
     close_logs
 
-    if @connection_state_callback
-      # if we were connecting or waiting for a prompt, return an exception to
-      # #waitfor
-      case @connection_state
-      when :connecting
-        call_connection_state_callback(ConnectionFailed.new)
-      when :waiting_for_prompt
-        error = TimeoutError.new
+    # if we were connecting or waiting for a prompt, return an exception to
+    # #waitfor
+    case prev_conn_state
+    when :waiting_for_prompt, :listening
+      # NOTE: reason should be Errno::ETIMEDOUT in these cases.
+      error = TimeoutError.new
 
-        # set hostname and command
-        if hostname = @telnet_options[:host]
-          error.hostname = hostname
-        end
-        error.command = @last_command if @last_command
-
-        call_connection_state_callback(error)
+      # set hostname and command
+      if hostname = @telnet_options[:host]
+        error.hostname = hostname
       end
+      error.command = @last_command if @last_command
+
+      @fiber_resumer.(error)
+    when :sleeping, :connected
+
+    when :connecting
+      @fiber_resumer.(ConnectionFailed.new)
+    else
+      m = "#{node}: bad connection state #{prev_conn_state.inspect} " +
+        "while unbinding"
+      warn m.red
+      debugger
     end
-
-    @connection_state = :closed
   end
 
-  ##
-  # Calls the @connection_state_callback with _obj_ and sets it to +nil+.
-  #
-  # Call this method *only* if <tt>@connection_state_callback</tt> is set!
-  #
-  def call_connection_state_callback(obj=nil)
-    callback, @connection_state_callback = @connection_state_callback, nil
-    callback.call(obj)
-  end
+  @@unbound_at = {}
+
+  def self.unbound_at() @@unbound_at end
 
   ##
   # Called by EventMachine after the connection is successfully established.
   #
   def connection_completed
-    @connection_state = :connected
-    call_connection_state_callback if @connection_state_callback
+    self.connection_state = :connected
+    @fiber_resumer.(:connection_completed)
+
+    # print received data in a more readable way
+    if $DEBUG
+      EventMachine.add_periodic_timer(0.5) { print_recently_received_data }
+    end
+  end
+
+  # Prints recently received data (@recently_received), if there's any, and
+  # empties that buffer afterwards.
+  def print_recently_received_data
+    return if @recently_received_data.empty?
+    warn "#{node}: Received: #{@recently_received_data.inspect}".cyan
+    @recently_received_data = ""
   end
 
   ##
@@ -906,6 +991,13 @@ class EventMachine::Protocols::SimpleTelnet < EventMachine::Connection
   end
 
   private
+
+  # Sets the @connection_state to _new_state_. Raises if current (old) state is
+  # :closed, because that can't be changed.
+  def connection_state=(new_state)
+    raise Errno::ENOTCONN, "Connection is already closed." if closed?
+    @connection_state = new_state
+  end
 
   ##
   # Sets up output and command logging.
