@@ -14,4 +14,5 @@ Gem::Specification.new do |s|
   s.extra_rdoc_files = ['README.rdoc']
   s.add_dependency('eventmachine', '>= 1.0.0')
   s.has_rdoc = true
+  s.license     = "BSD"
 end
