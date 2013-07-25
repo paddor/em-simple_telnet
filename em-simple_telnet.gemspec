@@ -2,7 +2,7 @@
 
 Gem::Specification.new do |s|
   s.name        = 'em-simple_telnet'
-  s.version     = '0.0.11'
+  s.version     = '0.0.12'
   s.date        = '2013-07-24'
   s.summary     = "Simple telnet client on EventMachine"
   s.description = "This library provides a very simple way to connect to " +
