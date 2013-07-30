@@ -210,7 +210,8 @@ class EventMachine::Protocols::SimpleTelnet < EventMachine::Connection
     # Merges DefaultOptions with _opts_. Establishes the connection to the
     # <tt>:host</tt> key using EventMachine.connect, logs in using #login and
     # passes the connection to the block provided. Closes the connection using
-    # #close after the block terminates. The connection is then returned.
+    # #close after the block terminates, unless it's already #closed?. The
+    # connection is then returned.
     #
     def connect opts
       opts = DefaultOptions.merge opts
@@ -240,7 +241,7 @@ class EventMachine::Protocols::SimpleTelnet < EventMachine::Connection
         ensure
           # Use #close so a subclass can execute some kind of logout command
           # before the connection is closed.
-          connection.close
+          connection.close unless closed?
         end
       ensure
         # close the connection in any case
