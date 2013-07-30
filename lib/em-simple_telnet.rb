@@ -241,7 +241,7 @@ class EventMachine::Protocols::SimpleTelnet < EventMachine::Connection
         ensure
           # Use #close so a subclass can execute some kind of logout command
           # before the connection is closed.
-          connection.close unless closed?
+          connection.close unless connection.closed?
         end
       ensure
         # close the connection in any case
