@@ -2,7 +2,7 @@
 
 Gem::Specification.new do |s|
   s.name        = 'em-simple_telnet'
-  s.version     = '0.0.10'
+  s.version     = '0.0.12'
   s.date        = '2013-07-24'
   s.summary     = "Simple telnet client on EventMachine"
   s.description = "This library provides a very simple way to connect to " +
@@ -14,4 +14,5 @@ Gem::Specification.new do |s|
   s.extra_rdoc_files = ['README.rdoc']
   s.add_dependency('eventmachine', '>= 1.0.0')
   s.has_rdoc = true
+  s.license     = "BSD"
 end
