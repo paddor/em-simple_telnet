@@ -730,7 +730,9 @@ class EventMachine::Protocols::SimpleTelnet < EventMachine::Connection
   # Raises Errno::ENOTCONN in case the connection is closed (#unbind has been
   # called before). Also contains some debugging stuff depending on $DEBUG.
   def send_data(s)
-    raise Errno::ENOTCONN, "Connection is already closed." if closed?
+    if closed?
+      raise Errno::ENOTCONN, "Can't send data: Connection is already closed."
+    end
     @last_sent_data = Time.now
     print_recently_received_data if $DEBUG
     warn "#{node}: Sending #{s.inspect}" if $DEBUG
@@ -996,7 +998,10 @@ class EventMachine::Protocols::SimpleTelnet < EventMachine::Connection
   # Sets the @connection_state to _new_state_. Raises if current (old) state is
   # :closed, because that can't be changed.
   def connection_state=(new_state)
-    raise Errno::ENOTCONN, "Connection is already closed." if closed?
+    if closed?
+      raise Errno::ENOTCONN,
+        "Can't change connection state: Connection is already closed."
+    end
     @connection_state = new_state
   end
 
