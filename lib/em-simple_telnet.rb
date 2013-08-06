@@ -158,6 +158,9 @@ class EventMachine::Protocols::SimpleTelnet < EventMachine::Connection
   # number of active connections
   @@_telnet_connection_count = 0
 
+  # the root fiber
+  RootFiber = Fiber.current
+
   class << self
 
     ##
@@ -189,7 +192,16 @@ class EventMachine::Protocols::SimpleTelnet < EventMachine::Connection
         callback.call if callback
       end
 
-      if EventMachine.reactor_running?
+      if EventMachine.reactor_running? and Fiber.current == RootFiber
+        warn "SimpleTelnet: EventMachine reactor had been started " +
+          "independently. Won't stop it automatically."
+        fiber.resume
+
+      elsif EventMachine.reactor_running?
+        # NOTE: Seems like the EventMachine reactor is already running, but we're
+        # not in the root Fiber. That means we're probably in the process of
+        # establishing a nested connection (from inside a Fiber created by SimpleTelnet).
+
         # Transfer control to the "inner" Fiber and stop the current one.
         # The block will be called after connect() returned to transfer control
         # back to the "outer" Fiber.
