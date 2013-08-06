@@ -2,8 +2,8 @@
 
 Gem::Specification.new do |s|
   s.name        = 'em-simple_telnet'
-  s.version     = '0.0.13'
-  s.date        = '2013-07-31'
+  s.version     = '0.0.14'
+  s.date        = '2013-08-06'
   s.summary     = "Simple telnet client on EventMachine"
   s.description = "This library provides a very simple way to connect to " +
     "telnet servers using EventMachine in a seemingly synchronous manner."
