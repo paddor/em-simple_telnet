@@ -1070,7 +1070,7 @@ class Protocols::SimpleTelnet < Connection
     string = string.gsub(/#{CR}#{NULL}/no, CR) if telnet_mode?
 
     # combine EOL into "\n"
-    string = string.gsub(/#{EOL}/no, "\n") unless bin_mode?
+    string = string.gsub(/#{EOL}/no, LF) unless bin_mode?
 
     # remove NULL
     string = string.gsub(/#{NULL}/no, '') unless bin_mode?
