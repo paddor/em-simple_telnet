@@ -1009,7 +1009,7 @@ class Protocols::SimpleTelnet < Connection
   def log_recently_received_data
     return if @recently_received_data.empty? || !log_recently_received_data?
     logger.debug "#{node}: Received: #{@recently_received_data.inspect}"
-    @recently_received_data = ""
+    @recently_received_data.clear
   end
 
   # @return [Boolean] if recently received data should be logged or not
