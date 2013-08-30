@@ -758,7 +758,6 @@ class Protocols::SimpleTelnet < Connection
     @last_sent_data = Time.now
     log_recently_received_data
     logger.debug "#{node}: Sending #{s.inspect}"
-    log_output(s)
     super
   end
 
