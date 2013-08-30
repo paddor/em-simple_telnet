@@ -532,10 +532,7 @@ class EventMachine::Protocols::SimpleTelnet < EventMachine::Connection
       buf = @input_rest + data
       @input_rest.clear
       unless @telnet_options[:bin_mode]
-        if pt_pos = buf.rindex(/\r\z/no)
-          buf = buf[0 ... pt_pos]
-          @input_rest = buf[pt_pos .. -1]
-        end
+        buf.chop! if buf =~ /\r\z/no
         buf.gsub!(/#{EOL}/no, "\n")
       end
     end
