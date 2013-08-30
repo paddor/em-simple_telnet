@@ -933,7 +933,7 @@ class Protocols::SimpleTelnet < Connection
   def unbind(reason)
     prev_conn_state = @connection_state
     self.connection_state = :closed
-    logger.debug "#{node}: Unbinding because of: " + reason.inspect
+    logger.debug "#{node}: Unbind reason: " + reason.inspect
     @@_telnet_connection_count -= 1
     close_logs
 
