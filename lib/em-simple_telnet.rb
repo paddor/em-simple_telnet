@@ -673,7 +673,8 @@ class Protocols::SimpleTelnet < Connection
   #
   def waitfor prompt=nil, opts={}
     if closed?
-      abort "Can't wait for anything when connection is already closed!"
+      raise Errno::ENOTCONN,
+        "Can't wait for anything when connection is already closed!"
     end
     options_were = @telnet_options
     timeout_was = self.timeout if opts.key?(:timeout)
