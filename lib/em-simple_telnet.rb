@@ -2,6 +2,9 @@ require "fiber"
 require 'timeout' # for Timeout::Error
 require "socket" # for SocketError
 require "eventmachine"
+require "logger"
+
+module EventMachine
 
 ##
 # Provides the facility to connect to telnet servers using EventMachine. The
@@ -25,7 +28,7 @@ require "eventmachine"
 # Because of being event-driven, it performs quite well and can handle a lot
 # of connections concurrently.
 #
-class EventMachine::Protocols::SimpleTelnet < EventMachine::Connection
+class Protocols::SimpleTelnet < Connection
 
   # :stopdoc:
   IAC   = 255.chr # "\377" # "\xff" # interpret as command
@@ -161,6 +164,16 @@ class EventMachine::Protocols::SimpleTelnet < EventMachine::Connection
   # the root fiber
   RootFiber = Fiber.current
 
+  # SimpleTelnet.logger
+  @logger = Logger.new($stderr)
+  @logger.progname = "SimpleTelnet"
+  @logger.level = Logger::INFO
+  @logger.level = Logger::DEBUG if $DEBUG
+
+  # @!attribute [r]
+  # the logger instance for SimpleTelnet
+  def self.logger() @logger end
+
   class << self
 
     ##
@@ -193,7 +206,7 @@ class EventMachine::Protocols::SimpleTelnet < EventMachine::Connection
       end
 
       if EventMachine.reactor_running? and Fiber.current == RootFiber
-        warn "SimpleTelnet: EventMachine reactor had been started " +
+        logger.debug "EventMachine reactor had been started " +
           "independently. Won't stop it automatically."
         fiber.resume
 
@@ -376,7 +389,8 @@ class EventMachine::Protocols::SimpleTelnet < EventMachine::Connection
     @input_rest = ""
     @wait_time_timer = nil
     @check_input_buffer_timer = nil
-    @recently_received_data = "" if $DEBUG
+    @recently_received_data = ""
+    @logger = opts[:logger] || EventMachine::Protocols::SimpleTelnet.logger
 
     setup_logging
   end
@@ -384,10 +398,10 @@ class EventMachine::Protocols::SimpleTelnet < EventMachine::Connection
   # Last command that was executed in this telnet session
   attr_reader :last_command
 
-  # Logger used to log output
+  # connection specific logger used to log output
   attr_reader :output_logger
 
-  # Logger used to log commands
+  # connection specific logger used to log commands
   attr_reader :command_logger
 
   # used telnet options Hash
@@ -396,8 +410,11 @@ class EventMachine::Protocols::SimpleTelnet < EventMachine::Connection
   # the callback executed again and again to resume this connection's Fiber
   attr_accessor :fiber_resumer
 
+  # logger for connection activity (messages from SimpleTelnet)
+  attr_accessor :logger
+
+  # @deprecated use {#fiber_resumer} instead
   def connection_state_callback
-    warn "#connection_state_callback deprecated. use #fiber_resumer instead"
     fiber_resumer
   end
 
@@ -471,7 +488,7 @@ class EventMachine::Protocols::SimpleTelnet < EventMachine::Connection
       end
     else
       if seconds
-        warn "Warning: Use EM::P::SimpleTelnet#timeout= to set the timeout."
+        logger.warn "Use #timeout= to set the timeout."
       end
       @telnet_options[:timeout]
     end
@@ -504,7 +521,7 @@ class EventMachine::Protocols::SimpleTelnet < EventMachine::Connection
   # #log_output. Then calls #process_payload.
   #
   def receive_data data
-    @recently_received_data << data if $DEBUG
+    @recently_received_data << data if logger.debug?
     if @telnet_options[:telnet_mode]
       c = @input_rest + data
       se_pos = c.rindex(/#{IAC}#{SE}/no) || 0
@@ -540,7 +557,7 @@ class EventMachine::Protocols::SimpleTelnet < EventMachine::Connection
     # in case only telnet sequences were received
     return if buf.empty?
 
-    log_output(buf, true)
+    log_output(buf)
     process_payload(buf)
   end
 
@@ -597,10 +614,9 @@ class EventMachine::Protocols::SimpleTelnet < EventMachine::Connection
     when :listening
       @fiber_resumer.(buf)
     when :connected, :sleeping
-      if $VERBOSE
-        warn "#{node}: Discarding data that was received while not waiting " +
-          "for data (state = #{@connection_state.inspect}): #{buf.inspect}"
-      end
+      logger.debug "#{node}: Discarding data that was received " +
+        "while not waiting " +
+        "for data (state = #{@connection_state.inspect}): #{buf.inspect}"
     else
       raise "Don't know what to do with received data while being in " +
         "connection state #{@connection_state.inspect}"
@@ -692,19 +708,17 @@ class EventMachine::Protocols::SimpleTelnet < EventMachine::Connection
     result = nil
     while result == nil
       # measure how long Fiber is paused
-      if $DEBUG
+      if logger.debug?
         before_pause = Time.now
         result = Fiber.yield
         pause_duration = Time.now - before_pause
 
-        m = "#{node}: Fiber was paused for #{pause_duration * 1000}ms and " +
-          "is resumed with: #{result.inspect}"
-        result.nil? ? warn(m.red) : warn(m)
+        logger.debug "#{node}: Fiber was paused for " +
+          "#{pause_duration * 1000}ms and is resumed with: #{result.inspect}"
       else
         result = Fiber.yield
       end
     end
-
 
     raise result if result.is_a? Exception
     return result
@@ -737,14 +751,14 @@ class EventMachine::Protocols::SimpleTelnet < EventMachine::Connection
   end
 
   # Raises Errno::ENOTCONN in case the connection is closed (#unbind has been
-  # called before). Also contains some debugging stuff depending on $DEBUG.
+  # called before).
   def send_data(s)
-    if closed?
-      raise Errno::ENOTCONN, "Can't send data: Connection is already closed."
-    end
+    raise Errno::ENOTCONN,
+      "Can't send data: Connection is already closed." if closed?
     @last_sent_data = Time.now
-    print_recently_received_data if $DEBUG
-    warn "#{node}: Sending #{s.inspect}" if $DEBUG
+    log_recently_received_data if logger.debug?
+    logger.debug "#{node}: Sending #{s.inspect}"
+    log_output(s)
     super
   end
 
@@ -818,8 +832,7 @@ class EventMachine::Protocols::SimpleTelnet < EventMachine::Connection
   # #print is used to send the command to the host instead of #puts.
   #
   def cmd command, opts={}
-    command = command.to_s
-    @last_command = command
+    @last_command = command = command.to_s
 
     # log the command
     log_command(opts[:hide] ? "<hidden command>" : command)
@@ -918,13 +931,9 @@ class EventMachine::Protocols::SimpleTelnet < EventMachine::Connection
   # Finally, the <tt>@connection_state</tt> is set to +closed+.
   #
   def unbind(reason)
-    @unbound_at = Time.now
     prev_conn_state = @connection_state
     self.connection_state = :closed
-    if $DEBUG
-      warn "#{node}: unbinding because of: " + reason.inspect.red.bold
-    end
-    @@unbound_at[node] = [ Time.now, prev_conn_state ]
+    logger.debug "#{node}: Unbinding because of: " + reason.inspect
     @@_telnet_connection_count -= 1
     close_logs
 
@@ -947,16 +956,10 @@ class EventMachine::Protocols::SimpleTelnet < EventMachine::Connection
     when :connecting
       @fiber_resumer.(ConnectionFailed.new)
     else
-      m = "#{node}: bad connection state #{prev_conn_state.inspect} " +
+      logger.error "#{node}: bad connection state #{prev_conn_state.inspect} " +
         "while unbinding"
-      warn m.red
-      debugger
     end
   end
-
-  @@unbound_at = {}
-
-  def self.unbound_at() @@unbound_at end
 
   ##
   # Called by EventMachine after the connection is successfully established.
@@ -965,18 +968,10 @@ class EventMachine::Protocols::SimpleTelnet < EventMachine::Connection
     self.connection_state = :connected
     @fiber_resumer.(:connection_completed)
 
-    # print received data in a more readable way
-    if $DEBUG
-      EventMachine.add_periodic_timer(0.5) { print_recently_received_data }
+    # log received data in a more readable way
+    if logger.debug?
+      EventMachine.add_periodic_timer(0.5) { log_recently_received_data }
     end
-  end
-
-  # Prints recently received data (@recently_received), if there's any, and
-  # empties that buffer afterwards.
-  def print_recently_received_data
-    return if @recently_received_data.empty?
-    warn "#{node}: Received: #{@recently_received_data.inspect}".cyan
-    @recently_received_data = ""
   end
 
   ##
@@ -1004,6 +999,25 @@ class EventMachine::Protocols::SimpleTelnet < EventMachine::Connection
 
   private
 
+  # Prints recently received data (@recently_received), if there's any, and
+  # empties that buffer afterwards.
+  #
+  # The goal is to log data in a more readable way, by periodically log what
+  # has recently been received, as opposed to each single character in case of
+  # a slowly answering telnet server.
+  def log_recently_received_data
+    return if @recently_received_data.empty?
+    logger.debug "#{node}: Received: #{@recently_received_data.inspect}"
+    @recently_received_data = ""
+  end
+
+  # Returns +true+ if recently received data should be logged.
+  # @see #log_recently_received_data
+  # @return [Boolean]
+  def should_log_recently_received_data?
+    true & logger.debug?
+  end
+
   # Sets the @connection_state to _new_state_. Raises if current (old) state is
   # :closed, because that can't be changed.
   def connection_state=(new_state)
@@ -1018,36 +1032,31 @@ class EventMachine::Protocols::SimpleTelnet < EventMachine::Connection
   # Sets up output and command logging.
   #
   def setup_logging
-    require 'logger'
-    if @telnet_options[:output_log]
-      @output_logger = Logger.new @telnet_options[:output_log]
-      log_output "\n# Starting telnet output log at #{Time.now}"
+    @output_logger = @command_logger = nil
+
+    if file = @telnet_options[:output_log]
+      @output_logger = Logger.new(file)
+      log_output "# Starting telnet output log at #{Time.now}\n"
     end
 
-    if @telnet_options[:command_log]
-      @command_logger = Logger.new @telnet_options[:command_log]
+    if file = @telnet_options[:command_log]
+      @command_logger = Logger.new(file)
     end
   end
 
   ##
-  # Logs _output_ to output log. If _exact_ is +true+, it will use #print
-  # instead of #puts.
+  # Logs _output_ to output log. Appends a newline if +output+ doesn't end in
+  # one. To supress this behavior, set +exact+ to +true+.
   #
-  def log_output output, exact=false
-    return unless @telnet_options[:output_log]
-    if exact
-      @output_logger.print output
-    else
-      @output_logger.puts output
-    end
+  def log_output output
+    @output_logger and @output_logger << output
   end
 
   ##
   # Logs _command_ to command log.
   #
   def log_command command
-    return unless @telnet_options[:command_log]
-    @command_logger.info command
+    @command_logger and @command_logger.info command
   end
 
   ##
@@ -1115,4 +1124,5 @@ class EventMachine::Protocols::SimpleTelnet < EventMachine::Connection
       end
     end
   end
+end
 end
