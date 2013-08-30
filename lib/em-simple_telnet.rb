@@ -521,7 +521,7 @@ class Protocols::SimpleTelnet < Connection
   # #log_output. Then calls #process_payload.
   #
   def receive_data data
-    @recently_received_data << data if logger.debug?
+    @recently_received_data << data if log_recently_received_data?
     if @telnet_options[:telnet_mode]
       c = @input_rest + data
       se_pos = c.rindex(/#{IAC}#{SE}/no) || 0
@@ -756,7 +756,7 @@ class Protocols::SimpleTelnet < Connection
     raise Errno::ENOTCONN,
       "Can't send data: Connection is already closed." if closed?
     @last_sent_data = Time.now
-    log_recently_received_data if logger.debug?
+    log_recently_received_data
     logger.debug "#{node}: Sending #{s.inspect}"
     log_output(s)
     super
@@ -999,23 +999,22 @@ class Protocols::SimpleTelnet < Connection
 
   private
 
-  # Prints recently received data (@recently_received), if there's any, and
-  # empties that buffer afterwards.
+  # Prints recently received data (@recently_received_data) if
+  # {#log_recently_received_data?} says so and there is recently received data
+  # in the buffer. Clears the buffer afterwards.
   #
   # The goal is to log data in a more readable way, by periodically log what
   # has recently been received, as opposed to each single character in case of
   # a slowly answering telnet server.
   def log_recently_received_data
-    return if @recently_received_data.empty?
+    return if @recently_received_data.empty? || !log_recently_received_data?
     logger.debug "#{node}: Received: #{@recently_received_data.inspect}"
     @recently_received_data = ""
   end
 
-  # Returns +true+ if recently received data should be logged.
-  # @see #log_recently_received_data
-  # @return [Boolean]
-  def should_log_recently_received_data?
-    true & logger.debug?
+  # @return [Boolean] if recently received data should be logged or not
+  def log_recently_received_data?
+    logger.debug?
   end
 
   # Sets the @connection_state to _new_state_. Raises if current (old) state is
