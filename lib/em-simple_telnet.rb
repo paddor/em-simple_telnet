@@ -743,7 +743,7 @@ class Protocols::SimpleTelnet < Connection
       yield pause_and_wait_for_result while true
     end
   ensure
-    self.connection_state = :connected
+    self.connection_state = :connected if !closed?
   end
 
   # Passes argument to #send_data.
