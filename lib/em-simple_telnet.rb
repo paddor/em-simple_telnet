@@ -517,8 +517,8 @@ class Protocols::SimpleTelnet < Connection
   ##
   # Called by EventMachine when data is received.
   #
-  # The data is processed using #preprocess_telnet. The data then logged using
-  # #log_output. Then calls #process_payload.
+  # The data is processed using #preprocess_telnet. The resulting "payload" is
+  # logged and handed over to {#process_payload}.
   #
   def receive_data data
     @recently_received_data << data if log_recently_received_data?
@@ -557,7 +557,7 @@ class Protocols::SimpleTelnet < Connection
     # in case only telnet sequences were received
     return if buf.empty?
 
-    log_output(buf)
+    @output_logger << buf if @output_logger
     process_payload(buf)
   end
 
@@ -808,7 +808,7 @@ class Protocols::SimpleTelnet < Connection
   # More exactly, the following things are done:
   #
   # * stores the command in @last_command
-  # * logs it using #log_command
+  # * logs it
   # * sends a string to the host (#print or #puts)
   # * reads in all received data (using #waitfor)
   # * returns the received data as String
@@ -823,8 +823,8 @@ class Protocols::SimpleTelnet < Connection
   # Note that the received data includes the prompt and in most cases the
   # host's echo of our command.
   #
-  # If _opts_ has the key <tt>:hide</tt> which evaluates to +true+, calls
-  # #log_command with <tt>"<hidden command>"</tt> instead of the command
+  # If _opts_ has the key <tt>:hide</tt> which evaluates to +true+, the 
+  # command is logged as <tt>"<hidden command>"</tt> instead of the command
   # itself. This is useful for passwords, so they don't get logged to the
   # command log.
   #
@@ -835,7 +835,7 @@ class Protocols::SimpleTelnet < Connection
     @last_command = command = command.to_s
 
     # log the command
-    log_command(opts[:hide] ? "<hidden command>" : command)
+    @command_logger.info(opts[:hide] ? "<hidden command>" : command) if @command_logger
 
     # send the command
     opts[:raw_command] ? print(command) : puts(command)
@@ -1035,27 +1035,12 @@ class Protocols::SimpleTelnet < Connection
 
     if file = @telnet_options[:output_log]
       @output_logger = Logger.new(file)
-      log_output "# Starting telnet output log at #{Time.now}\n"
+      @output_logger.info "# Starting telnet output log at #{Time.now}\n"
     end
 
     if file = @telnet_options[:command_log]
       @command_logger = Logger.new(file)
     end
-  end
-
-  ##
-  # Logs _output_ to output log. Appends a newline if +output+ doesn't end in
-  # one. To supress this behavior, set +exact+ to +true+.
-  #
-  def log_output output
-    @output_logger and @output_logger << output
-  end
-
-  ##
-  # Logs _command_ to command log.
-  #
-  def log_command command
-    @command_logger and @command_logger.info command
   end
 
   ##
