@@ -1,34 +1,54 @@
+require 'em-simple_telnet/version'
 require "fiber"
 require 'timeout' # for Timeout::Error
 require "socket" # for SocketError
 require "eventmachine"
 require "logger"
 
-module EventMachine
-
 ##
 # Provides the facility to connect to telnet servers using EventMachine. The
 # asynchronity is hidden so you can use this library just like Net::Telnet in
 # a seemingly synchronous manner. See README for an example.
 #
-#   EventMachine.run do
+# @example Standalone
+#   opts = {
+#     host: "localhost",
+#     username: "user",
+#     password: "secret",
+#   }
+#   
+#   EM::P::SimpleTelnet.new(opts) do |host|
+#     # At this point, we're already logged in.
+#   
+#     host.cmd("touch /my/file")
+#   
+#     # get some output
+#     puts host.cmd("ls -la")
+#   
+#     host.timeout(30) do
+#       # custom timeout for this block
+#       host.cmd "slow command"
+#     end
+#   end
 #
+# @example Inside an existing EventMachine loop
+#   EventMachine.run do
+#   
 #     opts = {
 #       host: "localhost",
 #       username: "user",
 #       password: "secret",
+#       output_log: "output.log", # log output to file
+#       command_log: "command.log", # log commands to file
 #     }
-#
+#   
 #     EM::P::SimpleTelnet.new(opts) do |host|
 #       # already logged in
 #       puts host.cmd("ls -la")
 #     end
 #   end
 #
-# Because of being event-driven, it performs quite well and can handle a lot
-# of connections concurrently.
-#
-class Protocols::SimpleTelnet < Connection
+class SimpleTelnet::Connection < EventMachine::Connection
 
   # :stopdoc:
   IAC   = 255.chr # "\377" # "\xff" # interpret as command
@@ -119,8 +139,10 @@ class Protocols::SimpleTelnet < Connection
     attr_accessor :command
   end
 
-  # default options for new connections (used for merging)
-  DefaultOptions = {
+  # @return [Hash] default options for new connections (used for merging)
+  # @see #initialize
+  # @see .connect
+  DEFAULT_OPTIONS = {
     host: "localhost",
     port: 23,
     prompt: %r{[$%#>] \z}n,
@@ -141,27 +163,26 @@ class Protocols::SimpleTelnet < Connection
     BINARY: false,
   }.freeze
 
-  # used to terminate the reactor when everything is done
-  stop_ticks = 0
-  StopWhenEMDone = lambda do
-    stop_ticks += 1
-    if stop_ticks >= 100
-      stop_ticks = 0
-      # stop when everything is done
-      if self.connection_count.zero? and EventMachine.defers_finished?
-        EventMachine.stop
-      else
-        EventMachine.next_tick(&StopWhenEMDone)
-      end
+  # @deprecated
+  DefaultOptions = DEFAULT_OPTIONS
+
+  # @return [Proc] used to stop EventMachine when everything has completed
+  STOP_WHEN_DONE = lambda do
+    # stop when everything is done
+    if self.connection_count.zero? and EventMachine.defers_finished?
+      EventMachine.stop
     else
-      EventMachine.next_tick(&StopWhenEMDone)
+      EventMachine.next_tick(&STOP_WHEN_DONE)
     end
   end
 
-  # number of active connections
+  # @deprecated
+  StopWhenEMDone = STOP_WHEN_DONE
+
+  # @return [Integer] number of active connections
   @@_telnet_connection_count = 0
 
-  # the root fiber
+  # @return [Fiber] the root fiber
   RootFiber = Fiber.current
 
   # SimpleTelnet.logger
@@ -170,25 +191,23 @@ class Protocols::SimpleTelnet < Connection
   @logger.level = Logger::INFO
   @logger.level = Logger::DEBUG if $DEBUG
 
-  # @!attribute [r]
-  # the logger instance for SimpleTelnet
-  def self.logger() @logger end
-
   class << self
+    # @return [Logger, #debug, #debug?, #info, #warn, ...] the logger instance
+    #   for SimpleTelnet
+    def logger() @logger end
 
-    ##
     # Recognizes whether this call was issued by the user program or by
     # EventMachine. If the call was not issued by EventMachine, merges the
-    # options provided with the DefaultOptions and creates a Fiber (not
+    # options provided with the {DEFAULT_OPTIONS} and creates a Fiber (not
     # started yet).  Inside the Fiber SimpleTelnet.connect would be called.
     #
     # If EventMachine's reactor is already running, just starts the Fiber.
     #
     # If it's not running yet, starts a new EventMachine reactor and starts the
-    # Fiber. The EventMachine block is stopped using the StopWhenEMDone proc
-    # (lambda).
+    # Fiber. It'll stop automatically when everything has completed
+    # (connections and deferred tasks).
     #
-    # The (closed) connection is returned.
+    # @return [SimpleTelnet::Connection] the (closed) connection
     #
     def new *args, &blk
       # call super if first argument is a connection signature of
@@ -225,21 +244,29 @@ class Protocols::SimpleTelnet < Connection
         # start EventMachine and stop it when connection is done
         EventMachine.run do
           fiber.resume
-          EventMachine.next_tick(&StopWhenEMDone)
+          EventMachine.next_tick(&STOP_WHEN_DONE)
         end
       end
       return connection
     end
 
-    ##
-    # Merges DefaultOptions with _opts_. Establishes the connection to the
-    # <tt>:host</tt> key using EventMachine.connect, logs in using #login and
-    # passes the connection to the block provided. Closes the connection using
-    # #close after the block terminates, unless it's already #closed?. The
-    # connection is then returned.
+    # Establishes connection to the host.
     #
-    def connect opts
-      opts = DefaultOptions.merge opts
+    # Merges {DEFAULT_OPTIONS} with _opts_. Tells EventMachine to establish
+    # the connection to the desired host and port using
+    # {SimpleTelnet::Connection}, and logs into the host using {#login}.
+    #
+    # Passes the connection to the block provided. It also ensures that the
+    # connection is closed using {#close} after the block returns, unless it's
+    # already {#closed?}. The connection is then returned.
+    #
+    # @option opts [String] :host the hostname to connect to
+    # @option opts [Integer] :port the TCP port to connect to
+    # @yieldparam connection [SimpleTelnet::Connection] the logged in
+    #   connection
+    # @return [SimpleTelnet::Connection]
+    def connect(opts)
+      opts = DEFAULT_OPTIONS.merge opts
 
       params = [
         # for EventMachine.connect
@@ -281,104 +308,95 @@ class Protocols::SimpleTelnet < Connection
       return connection
     end
 
-    ##
-    # Returns the number of active connections
-    # (<tt>@@_telnet_connection_count</tt>).
-    #
+    # @return [Integer] number of active connections
     def connection_count
       @@_telnet_connection_count
     end
   end
 
-  ##
   # Initializes the current instance. _opts_ is a Hash of options. The default
-  # values are in the constant DefaultOptions. The following keys are
-  # recognized:
+  # values are in the constant {DEFAULT_OPTIONS}.
   #
-  # +:host+::
-  #   the hostname or IP address of the host to connect to, as a String.
-  #   Defaults to "localhost".
+  # @option opts [String] :host ("localhost")
+  #   the hostname or IP address of the host to connect to.
   #
-  # +:port+::
-  #   the port to connect to.  Defaults to 23.
+  # @option opts [Integer] :port (23)
+  #   the TCP port to connect to
   #
-  # +:bin_mode+::
-  #   if +false+ (the default), newline substitution is performed.  Outgoing LF
-  #   is converted to CRLF, and incoming CRLF is converted to LF.  If +true+,
-  #   this substitution is not performed.  This value can also be set with the
-  #   #bin_mode= method.  The outgoing conversion only applies to the #puts
-  #   and #print methods, not the #write method.  The precise nature of the
+  # @option opts [Boolean] :bin_mode (false)
+  #   if +false+, newline substitution is performed.  Outgoing LF is converted
+  #   to CRLF, and incoming CRLF is converted to LF.  If +true+, this
+  #   substitution is not performed.  This value can also be set using
+  #   {#bin_mode=}.  The outgoing conversion only applies to the {#puts} and
+  #   {#print} methods, not the {#write} method.  The precise nature of the
   #   newline conversion is also affected by the telnet options SGA and BIN.
   #
-  # +:output_log+::
+  # @option opts [String, nil] :output_log (nil)
   #   the name of the file to write connection status messages and all
   #   received traffic to.  In the case of a proper Telnet session, this will
   #   include the client input as echoed by the host; otherwise, it only
   #   includes server responses.  Output is appended verbatim to this file.
   #   By default, no output log is kept.
   #
-  # +:command_log+::
+  # @option opts [String, nil] :command_log (nil)
   #   the name of the file to write the commands executed in this Telnet
   #   session.  Commands are appended to this file.  By default, no command
   #   log is kept.
   #
-  # +:prompt+::
+  # @option opts [Regexp, String] :prompt (%r{[$%#>] \z}n)
   #   a regular expression matching the host's command-line prompt sequence.
-  #   This is needed by the Telnet class to determine when the output from a
-  #   command has finished and the host is ready to receive a new command.  By
-  #   default, this regular expression is <tt>%r{[$%#>] \z}n</tt>.
+  #   This is needed to determine the end of a command's output.
   #
-  # +:login_prompt+::
-  #   a regular expression (or String, see #waitfor) used to wait for the
+  # @option opts [Regexp, String] :login_prompt (%r{[Ll]ogin[: ]*\z}n)
+  #   a regular expression (or String, see {#waitfor}) used to wait for the
   #   login prompt.
   #
-  # +:password_prompt+::
-  #   a regular expression (or String, see #waitfor) used to wait for the
+  # @option opts [Regexp, String] :password_prompt
+  #   (%r{[Pp]ass(?:word|phrase)[: ]*\z}n)
+  #   a regular expression (or String, see {#waitfor}) used to wait for the
   #   password prompt.
   #
-  # +:username+::
+  # @option opts [String, nil] :username (nil)
   #   the String that is sent to the telnet server after seeing the login
-  #   prompt. Just leave this value as +nil+ which is the default value if you
-  #   don't have to log in.
+  #   prompt. +nil+ means there's no need to log in.
   #
-  # +:password+::
+  # @option opts [String, nil] :password (nil)
   #   the String that is sent to the telnet server after seeing the password
-  #   prompt. Just leave this value as +nil+ which is the default value if you
-  #   don't have to print a password after printing the username.
+  #   prompt. +nil+ means there's no need for a password.
   #
-  # +:telnet_mode+::
-  #   a boolean value, +true+ by default.  In telnet mode, traffic received
+  # @option opts [Boolean] :telnet_mode (true)
+  #   In telnet mode, traffic received
   #   from the host is parsed for special command sequences, and these
-  #   sequences are escaped in outgoing traffic sent using #puts or #print
-  #   (but not #write).  If you are connecting to a non-telnet service (such
-  #   as SMTP or POP), this should be set to "false" to prevent undesired data
-  #   corruption.  This value can also be set by the #telnetmode method.
+  #   sequences are escaped in outgoing traffic sent using {#puts} or {#print}
+  #   (but not {#write}).  If you are connecting to a non-telnet service (such
+  #   as SMTP or POP), this should be set to +false+ to prevent undesired data
+  #   corruption.  This value can also be set by the {#telnet_mode=} method.
   #
-  # +:timeout+::
-  #   the number of seconds (default: +10+) to wait before timing out while
-  #   waiting for the prompt (in #waitfor).  Exceeding this timeout causes a
+  # @option opts [Integer] :timeout (10)
+  #   the number of seconds to wait before timing out while
+  #   waiting for the prompt (in {#waitfor}).  Exceeding this timeout causes a
   #   TimeoutError to be raised.  You can disable the timeout by setting
   #   this value to +nil+.
   #
-  # +:connect_timeout+::
-  #   the number of seconds (default: +3+) to wait before timing out the
-  #   initial attempt to connect. You can disable the timeout by setting this
-  #   value to +nil+.
+  # @option opts [Integer] :connect_timeout (3)
+  #   the number of seconds to wait before timing out the initial attempt to
+  #   connect. You can disable the timeout during login by setting this value
+  #   to +nil+.
   #
-  # +:wait_time+::
-  #   the amount of time to wait after seeing what looks like a prompt (that
-  #   is, received data that matches the Prompt option regular expression) to
-  #   see if more data arrives.  If more data does arrive in this time, it
-  #   assumes that what it saw was not really a prompt.  This is to try to
-  #   avoid false matches, but it can also lead to missing real prompts (if,
-  #   for instance, a background process writes to the terminal soon after the
-  #   prompt is displayed).  By default, set to 0, meaning not to wait for
-  #   more data.
+  # @option opts [Integer, Float] :wait_time (0)
+  #   the number of seconds to wait after seeing what looks like a prompt
+  #   (that is, received data that matches the :prompt option value) to let
+  #   more data arrive.  If more data does arrive during that time, it is
+  #   assumed that the previous prompt was in fact not the final prompt.  This
+  #   can avoid false matches, but it can also lead to missing real prompts
+  #   (if, for instance, a background process writes to the terminal soon
+  #   after the prompt is displayed).  The default of zero means not to wait
+  #   for more data after seeing what looks like a prompt.
   #
-  # The options are actually merged in connect().
+  # The options are actually merged in {.connect}.
   #
-  def initialize opts
-    @telnet_options = opts
+  def initialize(opts)
+    @options = opts
     @last_command = nil
 
     @logged_in = nil
@@ -395,22 +413,31 @@ class Protocols::SimpleTelnet < Connection
     setup_logging
   end
 
-  # Last command that was executed in this telnet session
+  # @return [String] Last command that was executed in this telnet session
   attr_reader :last_command
 
-  # connection specific logger used to log output
+  # @return [Logger] connection specific logger used to log output
   attr_reader :output_logger
 
-  # connection specific logger used to log commands
+  # @return [Logger] connection specific logger used to log commands
   attr_reader :command_logger
 
-  # used telnet options Hash
-  attr_reader :telnet_options
+  # @return [Hash] used telnet options Hash
+  attr_reader :options
 
-  # the callback executed again and again to resume this connection's Fiber
+  # @deprecated
+  # Same as {#options}.
+  # @return [Hash]
+  def telnet_options
+    @options
+  end
+
+  # @return [Proc] the callback executed again and again to resume this
+  #   connection's Fiber
   attr_accessor :fiber_resumer
 
-  # logger for connection activity (messages from SimpleTelnet)
+  # @return [Logger, #debug, #debug?, #info, ...] logger for connection
+  #   activity (messages from SimpleTelnet)
   attr_accessor :logger
 
   # @deprecated use {#fiber_resumer} instead
@@ -418,137 +445,124 @@ class Protocols::SimpleTelnet < Connection
     fiber_resumer
   end
 
-  # last prompt matched
+  # @return [String] last prompt matched
   attr_reader :last_prompt
 
-  ##
-  # Return current telnet mode option of this connection.
-  #
+  # @return [Time] when the last data was sent
+  attr_reader :last_data_sent_at
+
+  # @return [Boolean] whether telnet mode is enabled or not
   def telnet_mode?
-    @telnet_options[:telnet_mode]
+    @options[:telnet_mode]
   end
 
-  ##
   # Turn telnet command interpretation on or off for this connection.  It
   # should be on for true telnet sessions, off if used to connect to a
   # non-telnet service such as SMTP.
   #
+  # @param bool [Boolean] whether to use telnet mode for this connection
   def telnet_mode=(bool)
-    @telnet_options[:telnet_mode] = bool
+    @options[:telnet_mode] = bool
   end
 
-  ##
-  # Return current bin mode option of this connection.
-  #
+  # @return [Boolean] current bin mode option of this connection
   def bin_mode?
-    @telnet_options[:bin_mode]
+    @options[:bin_mode]
   end
 
-  ##
   # Turn newline conversion on or off for this connection.
-  #
+  # @param bool [Boolean] whether to use bin mode (no newline conversion) for
+  #   this connection
   def bin_mode=(bool)
-    @telnet_options[:bin_mode] = bool
+    @options[:bin_mode] = bool
   end
 
-  ##
   # Set the activity timeout to _seconds_ for this connection.  To disable it,
-  # set it to +0+ or +nil+.
-  #
-  def timeout= seconds
-    @telnet_options[:timeout] = seconds
+  # set it to +0+ or +nil+. If no data is received (or sent) for that amount
+  # of time, the connection will be closed.
+  # @param seconds [Integer] the new timeout in seconds
+  def timeout=(seconds)
+    @options[:timeout] = seconds
     set_comm_inactivity_timeout( seconds )
   end
 
-  ##
-  # If a block is given, sets the timeout to _seconds_ (see #timeout=),
-  # executes the block and restores the previous timeout. The block value is
-  # returned.  This is useful if you want to execute one or more commands with
-  # a special timeout.
+  # If a block is given, sets the timeout to _seconds_ and executes the block
+  # and restores the previous timeout.  This is useful when you want to
+  # temporarily change the timeout for some commands.
   #
   # If no block is given, the current timeout is returned.
   #
-  # Example:
+  # @example
+  #   current_timeout = host.timeout
   #
-  #  current_timeout = host.timeout
+  #    host.timeout(200) do
+  #      host.cmd "command 1"
+  #      host.cmd "command 2"
+  #    end
   #
-  #   host.timeout 200 do
-  #     host.cmd "command 1"
-  #     host.cmd "command 2"
-  #   end
-  #
-  def timeout seconds=nil
-    if block_given?
-      before = @telnet_options[:timeout]
-      self.timeout = seconds
-      begin
-        yield
-      ensure
-        self.timeout = before
-      end
-    else
-      if seconds
-        logger.warn "Use #timeout= to set the timeout."
-      end
-      @telnet_options[:timeout]
-    end
+  # @return [Integer] the current timeout, if no block given
+  # @return [Object] the block's value, if it was given
+  # @see #timeout=
+  def timeout(seconds = nil)
+    return @options[:timeout] unless block_given?
+
+    before = @options[:timeout]
+    self.timeout = seconds
+    yield
+  ensure
+    self.timeout = before
   end
 
-  ##
-  # When the login succeeded for this connection.
-  #
+  # @return [Time] when the login succeeded for this connection
   attr_reader :logged_in
 
-  ##
-  # Returns +true+ if the login already succeeded for this connection.
-  # Returns +false+ otherwise.
-  #
+  # @return [Boolean] whether the login already succeeded for this connection
   def logged_in?
     @logged_in ? true : false
   end
 
-  ##
-  # Returns +true+ if the connection is closed.
-  #
+  # @return [Boolean] whether the connection is closed.
   def closed?
     @connection_state == :closed
   end
 
-  ##
   # Called by EventMachine when data is received.
   #
-  # The data is processed using #preprocess_telnet. The resulting "payload" is
+  # The data is processed using {#preprocess}, which processes telnet
+  # sequences and strips them away. The resulting "payload" is
   # logged and handed over to {#process_payload}.
   #
-  def receive_data data
+  # @param data [String] newly received raw data, including telnet sequences
+  # @return [void]
+  def receive_data(data)
     @recently_received_data << data if log_recently_received_data?
-    if @telnet_options[:telnet_mode]
+    if @options[:telnet_mode]
       c = @input_rest + data
       se_pos = c.rindex(/#{IAC}#{SE}/no) || 0
       sb_pos = c.rindex(/#{IAC}#{SB}/no) || 0
       if se_pos < sb_pos
-        buf = preprocess_telnet(c[0 ... sb_pos])
+        buf = preprocess(c[0 ... sb_pos])
         @input_rest = c[sb_pos .. -1]
 
       elsif pt_pos = c.rindex(
         /#{IAC}[^#{IAC}#{AO}#{AYT}#{DM}#{IP}#{NOP}]?\z/no) ||
         c.rindex(/\r\z/no)
 
-        buf = preprocess_telnet(c[0 ... pt_pos])
+        buf = preprocess(c[0 ... pt_pos])
         @input_rest = c[pt_pos .. -1]
 
       else
-        buf = preprocess_telnet(c)
+        buf = preprocess(c)
         @input_rest.clear
       end
     else
       # Not Telnetmode.
       #
-      # We cannot use #preprocess_telnet on this data, because that
+      # We cannot use #preprocess on this data, because that
       # method makes some Telnetmode-specific assumptions.
       buf = @input_rest + data
       @input_rest.clear
-      unless @telnet_options[:bin_mode]
+      unless @options[:bin_mode]
         buf.chop! if buf =~ /\r\z/no
         buf.gsub!(/#{EOL}/no, "\n")
       end
@@ -561,14 +575,15 @@ class Protocols::SimpleTelnet < Connection
     process_payload(buf)
   end
 
-  ##
-  # Appends _buf_ to the <tt>@input_buffer</tt>. 
-  # Then cancels the @wait_time_timer and @check_input_buffer_timer if they're
-  # set. 
+  # Appends _buf_ to the <tt>@input_buffer</tt>.
+  # Then cancels the <tt>@wait_time_timer</tt> and
+  # <tt>@check_input_buffer_timer</tt> if they're set.
   #
   # Does some performance optimizations in case the input buffer is becoming
-  # huge and finally calls #check_input_buffer.
+  # huge and finally calls {#check_input_buffer}.
   #
+  # @param buf [String] received data with telnet sequences stripped away
+  # @return [void]
   def process_payload(buf)
     # append output from server to input buffer and log it
     @input_buffer << buf
@@ -623,21 +638,21 @@ class Protocols::SimpleTelnet < Connection
     end
   end
 
-  ##
   # Checks the input buffer (<tt>@input_buffer</tt>) for the prompt we're
-  # waiting for. Calls @fiber_resumer with the output if the
+  # waiting for. Calls <tt>@fiber_resumer</tt> with the output if the
   # prompt has been found.
   #
-  # If <tt>@telnet_options[:wait_time]</tt> is set, it will wait this amount
+  # If <tt>@options[:wait_time]</tt> is set, it will wait this amount
   # of seconds after seeing what looks like the prompt before calling
   # @fiber_resumer.  This way, more data can be received
-  # until the real prompt is received. This is useful for commands that send
-  # multiple prompts.
+  # until the real prompt is received. This is useful for commands that result
+  # in multiple prompts.
   #
+  # @return [void]
   def check_input_buffer
-    return unless md = @input_buffer.match(@telnet_options[:prompt])
+    return unless md = @input_buffer.match(@options[:prompt])
 
-    if s = @telnet_options[:wait_time] and s > 0
+    if s = @options[:wait_time] and s > 0
       # resume Fiber after s seconds
       @wait_time_timer = EventMachine::Timer.new(s) { process_match_data(md) }
     else
@@ -646,9 +661,10 @@ class Protocols::SimpleTelnet < Connection
     end
   end
 
-  # Takes out the @last_prompt from _md_ (MatchData) and remembers it.
-  # Resumes the fiber (using @fiber_resumer) with the output (which
-  # includes the prompt and everything before).
+  # Remembers md as the <tt>@last_prompt</tt> and resumes the fiber, passing
+  # it the whole output received up to and including the match data.
+  # @param md [MatchData]
+  # @return [void]
   def process_match_data(md)
     @last_prompt = md.to_s # remember the prompt matched
     output = md.pre_match + @last_prompt
@@ -656,39 +672,34 @@ class Protocols::SimpleTelnet < Connection
     @fiber_resumer.(output)
   end
 
-  ##
   # Read data from the host until a certain sequence is matched.
   #
-  # All data read will be returned in a single string.  Note that the received
-  # data includes the matched sequence we were looking for.
-  #
-  # _prompt_ can be a Regexp or String. If it's not a Regexp, it's converted
-  # to a Regexp (all special characters escaped) assuming it's a String.
-  #
-  # _opts_ can be a hash of options. The following options are used and thus
-  # can be overridden:
-  #
-  # * +:timeout+
-  # * +:wait_time+ (actually used by #check_input_buffer)
-  #
-  def waitfor prompt=nil, opts={}
+  # @param prompt [Regexp, String] If it's not a Regexp, it's converted to
+  #   a Regexp (all special characters escaped) assuming it's a String.
+  # @option opts [Integer] :timeout the timeout while waiting for new data to
+  #   arrive
+  # @option opts [Integer] :wait_time time to wait after receiving what looks
+  #   like a prompt
+  # @return [String] output including prompt
+  # @raise [Errno::ENOTCONN] if connection is closed
+  def waitfor(prompt = nil, opts = {})
     if closed?
       raise Errno::ENOTCONN,
         "Can't wait for anything when connection is already closed!"
     end
-    options_were = @telnet_options
+    options_were = @options
     timeout_was = self.timeout if opts.key?(:timeout)
     opts[:prompt] = prompt if prompt
-    @telnet_options = @telnet_options.merge opts
+    @options = @options.merge opts
 
     # convert String prompt into a Regexp
-    unless @telnet_options[:prompt].is_a? Regexp
-      regex = Regexp.new(Regexp.quote(@telnet_options[:prompt]))
-      @telnet_options[:prompt] = regex
+    unless @options[:prompt].is_a? Regexp
+      regex = Regexp.new(Regexp.quote(@options[:prompt]))
+      @options[:prompt] = regex
     end
 
     # set custom inactivity timeout, if wanted
-    self.timeout = @telnet_options[:timeout] if opts.key?(:timeout)
+    self.timeout = @options[:timeout] if opts.key?(:timeout)
 
     # so #unbind knows we were waiting for a prompt (in case that inactivity
     # timeout fires)
@@ -696,29 +707,21 @@ class Protocols::SimpleTelnet < Connection
 
     pause_and_wait_for_result
   ensure
-    @telnet_options = options_were
+    @options = options_were
     self.timeout = timeout_was if opts.key?(:timeout)
 
-    # #unbind could have been called in the meantime
+    # NOTE: #unbind could have been called in the meantime
     self.connection_state = :connected if !closed?
   end
 
   # Pauses the current Fiber. When resumed, returns the value passed. If the
   # value passed is an Exeption, it's raised.
+  # @return [String] value passed to Fiber#resume (output received)
+  # @raise [Exception] exception that has been passed to Fiber#resume
   def pause_and_wait_for_result
     result = nil
-    while result == nil
-      # measure how long Fiber is paused
-      if logger.debug?
-        before_pause = Time.now
-        result = Fiber.yield
-        pause_duration = Time.now - before_pause
-
-        logger.debug "#{node}: Fiber was paused for " +
-          "#{pause_duration * 1000}ms and is resumed with: #{result.inspect}"
-      else
-        result = Fiber.yield
-      end
+    while result.nil?
+      result = Fiber.yield
     end
 
     raise result if result.is_a? Exception
@@ -726,17 +729,19 @@ class Protocols::SimpleTelnet < Connection
   end
 
   # Identifier for this connection. Like an IP address or hostname. In this
-  # case, it's <tt>@telnet_options[:host]</tt>.
+  # case, it's <tt>@options[:host]</tt>.
+  # @return [String]
   def node
-    @telnet_options[:host]
+    @options[:host]
   end
 
   # Listen for anything that's received from the node. Each received chunk
   # will be yielded to the block passed. To make it stop listening, the block
-  # should +return+ or +raise+ something.
+  # should return or raise something.
   #
-  # The default timeout during listening is 90 seconds. Use the option
-  # +:timeout+ to change this.
+  # @option opts [Integer] :timeout (90) temporary {#timeout} to use
+  # @yieldparam output [String] the newly output received
+  # @return [void]
   def listen(opts = {}, &blk)
     self.connection_state = :listening
     timeout(opts.fetch(:timeout, 90)) do
@@ -746,17 +751,20 @@ class Protocols::SimpleTelnet < Connection
     self.connection_state = :connected if !closed?
   end
 
-  # Passes argument to #send_data.
+  # Passes argument to {#send_data}.
+  # @param s [String] raw data to send
   def write(s)
     send_data(s)
   end
 
-  # Raises Errno::ENOTCONN in case the connection is closed (#unbind has been
-  # called before).
+  # Tells EventMachine to send raw data to the telnet server. This also
+  # updates {#last_data_sent_at} and logs recently received data, if wanted.
+  # @param s [String] what to send
+  # @raise [Errno::ENOTCONN] if the connection is closed
   def send_data(s)
     raise Errno::ENOTCONN,
       "Can't send data: Connection is already closed." if closed?
-    @last_sent_data = Time.now
+    @last_data_sent_at = Time.now
     log_recently_received_data
     logger.debug "#{node}: Sending #{s.inspect}"
     super
@@ -767,18 +775,20 @@ class Protocols::SimpleTelnet < Connection
   #
   # This does _not_ automatically append a newline to the string.  Embedded
   # newlines may be converted and telnet command sequences escaped depending
-  # upon the values of #telnet_mode, #bin_mode, and telnet options set by the
+  # upon the values of {#telnet_mode}, {#bin_mode}, and telnet options set by the
   # host.
   #
+  # @param string [String] what to send
+  # @return [void]
   def print(string)
     string = string.gsub(/#{IAC}/no, IAC + IAC) if telnet_mode?
 
     unless bin_mode?
-      string = if @telnet_options[:BINARY] and @telnet_options[:SGA]
+      string = if @options[:BINARY] and @options[:SGA]
         # IAC WILL SGA IAC DO BIN send EOL --> CR
         string.gsub(/\n/n, CR)
 
-      elsif @telnet_options[:SGA]
+      elsif @options[:SGA]
         # IAC WILL SGA send EOL --> CR+NULL
         string.gsub(/\n/n, CR + NULL)
 
@@ -792,50 +802,52 @@ class Protocols::SimpleTelnet < Connection
   end
 
   ##
-  # Sends a string to the host.
+  # Sends a string to the host, along with an appended newline if there isn't
+  # one already.
   #
-  # Same as #print, but appends a newline to the string unless there's
-  # already one.
-  #
+  # @param string [String] what to send
+  # @return [void]
   def puts(string)
     string += "\n" unless string.end_with? "\n"
     print string
   end
 
-  ##
-  # Sends a command to the host.
+  # Sends a command to the host and returns its output.
   #
   # More exactly, the following things are done:
   #
-  # * stores the command in @last_command
-  # * logs it
-  # * sends a string to the host (#print or #puts)
-  # * reads in all received data (using #waitfor)
-  # * returns the received data as String
+  # * stores the command (see {#last_command})
+  # * logs it (see {#command_logger})
+  # * sends a string to the host ({#print} or {#puts})
+  # * reads in all received data (using {#waitfor})
   #
-  # _opts_ can be a Hash of options. It is passed to #waitfor as the second
-  # parameter. The element in _opts_ with the key <tt>:prompt</tt> is used as
-  # the first parameter in the call to #waitfor. Example usage:
-  # 
+  # @example Normal usage
+  #   output = host.cmd "ls -la"
+  #
+  # @example Custom Prompt
   #   host.cmd "delete user john", prompt: /Are you sure?/
   #   host.cmd "yes"
   #
-  # Note that the received data includes the prompt and in most cases the
-  # host's echo of our command.
+  # @note The returned output includes the prompt and in most cases the
+  # host's echo of the command sent.
   #
-  # If _opts_ has the key <tt>:hide</tt> which evaluates to +true+, the 
-  # command is logged as <tt>"<hidden command>"</tt> instead of the command
-  # itself. This is useful for passwords, so they don't get logged to the
-  # command log.
-  #
-  # If _opts_ has the key <tt>:raw_command</tt> which evaluates to +true+,
-  # #print is used to send the command to the host instead of #puts.
-  #
-  def cmd command, opts={}
+  # @param command [String] the command to execute
+  # @option opts [Boolean] :hide (false) whether to hide the command from the
+  #   command log ({#command_logger}). If so, it is logged as <tt>"<hidden
+  #   command>"</tt> instead of the command itself. This is useful for
+  #   passwords, so they don't get logged to the command log.
+  # @option opts [Boolean] :raw_command (false) whether to send a raw command
+  #   using {#print}, as opposed to using {#puts}
+  # @option opts [Regexp, String] :prompt (nil) prompt to look for after this
+  #   command's output (instead of the one set in <tt>options[:prompt]</tt>)
+  # @return [String] the command's output, including prompt
+  def cmd(command, opts = {})
     @last_command = command = command.to_s
 
     # log the command
-    @command_logger.info(opts[:hide] ? "<hidden command>" : command) if @command_logger
+    if @command_logger
+      @command_logger.info(opts[:hide] ? "<hidden command>" : command)
+    end
 
     # send the command
     opts[:raw_command] ? print(command) : puts(command)
@@ -844,9 +856,9 @@ class Protocols::SimpleTelnet < Connection
     waitfor(opts[:prompt], opts)
   end
 
-  ##
   # Login to the host with a given username and password.
   #
+  # @example
   #   host.login username: "myuser", password: "mypass"
   #
   # This method looks for the login and password prompt (see implementation)
@@ -855,18 +867,16 @@ class Protocols::SimpleTelnet < Connection
   # connecting to a service other than telnet), you will need to handle login
   # yourself.
   #
-  # If the key <tt>:password</tt> is omitted (and not set on connection
-  # level), the method will not look for a prompt.
+  # @note Don't forget to set <tt>@logged_in</tt> after the login succeeds if
+  #   you override this method!
   #
-  # The method returns all data received during the login process from the
-  # host, including the echoed username but not the password (which the host
-  # should not echo anyway).
-  #
-  # Don't forget to set <tt>@logged_in</tt> after the login succeeds when you
-  # redefine this method!
-  #
+  # @option opts [String, nil] :username (options[:username]) the username to
+  #   use to log in, if login is needed
+  # @option opts [String, nil] :password (options[:password] the password to
+  #   use to log in, if a password is needed
+  # @return [String] all data received during the login process
   def login opts={}
-    opts = @telnet_options.merge opts
+    opts = @options.merge opts
 
     # don't log in if username is not set
     if opts[:username].nil?
@@ -886,49 +896,49 @@ class Protocols::SimpleTelnet < Connection
         output << cmd(opts[:username])
       end
     rescue Timeout::Error
-      e = LoginFailed.new("Timed out while expecting some kind of prompt.")
-      e.set_backtrace $!.backtrace
-      raise e
+      raise LoginFailed, "Timed out while expecting some kind of prompt."
     end
 
     @logged_in = Time.now
     output
   end
 
-  ##
   # Called by EventMachine when the connection is being established (not after
-  # the connection is established! see #connection_completed).  This occurs
-  # directly after the call to #initialize.
+  # the connection is established! see {#connection_completed}).  This occurs
+  # directly after the call to {#initialize}.
   #
   # Sets the +pending_connect_timeout+ to
-  # <tt>@telnet_options[:connect_timeout]</tt> seconds. This is the duration
+  # <tt>options[:connect_timeout]</tt> seconds. This is the duration
   # after which a TCP connection in the connecting state will fail (abort and
-  # run #unbind). Increases <tt>@@_telnet_connection_count</tt> by one after
+  # run {#unbind}). Increases <tt>@@_telnet_connection_count</tt> by one after
   # that.
   #
   # Sets also the +comm_inactivity_timeout+ to
-  # <tt>@telnet_options[:timeout]</tt> seconds. This is the duration after
+  # <tt>options[:timeout]</tt> seconds. This is the duration after
   # which a TCP connection is automatically closed if no data was sent or
   # received.
   #
+  # @return [void]
+  #
   def post_init
-    self.pending_connect_timeout = @telnet_options[:connect_timeout]
-    self.comm_inactivity_timeout = @telnet_options[:timeout]
+    self.pending_connect_timeout = @options[:connect_timeout]
+    self.comm_inactivity_timeout = @options[:timeout]
     @@_telnet_connection_count += 1
   end
 
-  ##
-  # Called by EventMachine after this connection is closed.
+  # Called by EventMachine after this connection has been closed.
   #
-  # Decreases <tt>@@_telnet_connection_count</tt> by one and calls #close_logs.
+  # Decreases <tt>@@_telnet_connection_count</tt> by one and calls {#close_logs}.
   #
-  # After that is set, it takes a
-  # look at <tt>@connection_state</tt>. If it was <tt>:connecting</tt>, calls
-  # @fiber_resumer with a new instance of ConnectionFailed.
-  # If it was <tt>:waiting_for_prompt</tt>, calls the same method with a new
-  # instance of TimeoutError.
+  # If we were in the connection state <tt>:waiting_for_prompt</tt>, this will
+  # cause a TimeoutError to be raised.
   #
-  # Finally, the <tt>@connection_state</tt> is set to +closed+.
+  # If we were in the process of connecting, this will cause
+  # {ConnectionFailed} to be raised.
+
+  # Finally, the connection state is set to +:closed+.
+  #
+  # @return [void]
   #
   def unbind(reason)
     prev_conn_state = @connection_state
@@ -945,7 +955,7 @@ class Protocols::SimpleTelnet < Connection
       error = TimeoutError.new
 
       # set hostname and command
-      if hostname = @telnet_options[:host]
+      if hostname = @options[:host]
         error.hostname = hostname
       end
       error.command = @last_command if @last_command
@@ -961,9 +971,12 @@ class Protocols::SimpleTelnet < Connection
     end
   end
 
-  ##
   # Called by EventMachine after the connection is successfully established.
   #
+  # If the debug level in {#logger} is active, this will cause received data
+  # to be logged periodically.
+  #
+  # @return [void]
   def connection_completed
     self.connection_state = :connected
     @fiber_resumer.(:connection_completed)
@@ -977,24 +990,32 @@ class Protocols::SimpleTelnet < Connection
   ##
   # Redefine this method to execute some logout command like +exit+ or
   # +logout+ before the connection is closed. Don't forget: The command will
-  # probably not return a prompt, so use #puts, which doesn't wait for a
+  # probably not return a prompt, so use {#puts}, which doesn't wait for a
   # prompt.
   #
   def close
   end
 
   ##
-  # Close output and command logs if they're set. IOError is rescued because
-  # they could already be closed. #closed? can't be used, because the method
-  # is not implemented by Logger, for example.
+  # Close output and command logs if they're set.
+
   #
   def close_logs
-    begin @output_logger.close
+    # NOTE: IOError is rescued because they could already be closed.
+    # {#closed?} can't be used, because the method is not implemented by
+    # Logger, for example.
+
+    begin
+      @output_logger.close
     rescue IOError
-    end if @telnet_options[:output_log]
-    begin @command_logger.close
+      # already closed
+    end if @options[:output_log]
+
+    begin
+      @command_logger.close
     rescue IOError
-    end if @telnet_options[:command_log]
+      # already closed
+    end if @options[:command_log]
   end
 
   private
@@ -1006,6 +1027,8 @@ class Protocols::SimpleTelnet < Connection
   # The goal is to log data in a more readable way, by periodically log what
   # has recently been received, as opposed to each single character in case of
   # a slowly answering telnet server.
+  #
+  # @return [void]
   def log_recently_received_data
     return if @recently_received_data.empty? || !log_recently_received_data?
     logger.debug "#{node}: Received: #{@recently_received_data.inspect}"
@@ -1017,8 +1040,10 @@ class Protocols::SimpleTelnet < Connection
     logger.debug?
   end
 
-  # Sets the @connection_state to _new_state_. Raises if current (old) state is
-  # :closed, because that can't be changed.
+  # Sets a new connection state.
+  # @param new_state [Symbol]
+  # @raise [Errno::ENOTCONN] if current (old) state is +:closed+, because that
+  #   can't be changed.
   def connection_state=(new_state)
     if closed?
       raise Errno::ENOTCONN,
@@ -1027,29 +1052,31 @@ class Protocols::SimpleTelnet < Connection
     @connection_state = new_state
   end
 
-  ##
-  # Sets up output and command logging.
+  # Sets up output and command logging. This depends on
+  # <tt>options[:output_log]</tt> and <tt>options[:command_log]</tt>.
   #
+  # @return [void]
   def setup_logging
     @output_logger = @command_logger = nil
 
-    if file = @telnet_options[:output_log]
+    if file = @options[:output_log]
       @output_logger = Logger.new(file)
       @output_logger.info "# Starting telnet output log at #{Time.now}\n"
     end
 
-    if file = @telnet_options[:command_log]
+    if file = @options[:command_log]
       @command_logger = Logger.new(file)
     end
   end
 
-  ##
   # Preprocess received data from the host.
   #
   # Performs newline conversion and detects telnet command sequences.
-  # Called automatically by #receive_data.
+  # Called automatically by {#receive_data}.
   #
-  def preprocess_telnet string
+  # @param string [String] the raw string including telnet sequences
+  # @return [String] resulting data, hereby called "payload"
+  def preprocess string
     # combine CR+NULL into CR
     string = string.gsub(/#{CR}#{NULL}/no, CR) if telnet_mode?
 
@@ -1072,7 +1099,7 @@ class Protocols::SimpleTelnet < Connection
         ''
       elsif DO[0] == $1[0]  # respond to "IAC DO x"
         if OPT_BINARY[0] == $1[1]
-          @telnet_options[:BINARY] = true
+          @options[:BINARY] = true
           send_data(IAC + WILL + OPT_BINARY)
         else
           send_data(IAC + WONT + $1[1..1])
@@ -1087,7 +1114,7 @@ class Protocols::SimpleTelnet < Connection
         elsif OPT_ECHO[0] == $1[1]
           send_data(IAC + DO + OPT_ECHO)
         elsif OPT_SGA[0]  == $1[1]
-          @telnet_options[:SGA] = true
+          @options[:SGA] = true
           send_data(IAC + DO + OPT_SGA)
         else
           send_data(IAC + DONT + $1[1..1])
@@ -1097,7 +1124,7 @@ class Protocols::SimpleTelnet < Connection
         if    OPT_ECHO[0] == $1[1]
           send_data(IAC + DONT + OPT_ECHO)
         elsif OPT_SGA[0]  == $1[1]
-          @telnet_options[:SGA] = false
+          @options[:SGA] = false
           send_data(IAC + DONT + OPT_SGA)
         else
           send_data(IAC + DONT + $1[1..1])
@@ -1106,7 +1133,9 @@ class Protocols::SimpleTelnet < Connection
       else
         ''
       end
-    end
+    end # string.gsub
   end
 end
-end
+
+# backwards compatibility
+EventMachine::Protocols::SimpleTelnet = SimpleTelnet::Connection
