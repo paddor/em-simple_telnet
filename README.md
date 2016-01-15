@@ -1,3 +1,6 @@
+[![Build Status on Travis CI](https://travis-ci.org/paddor/em-simple_telnet.svg?branch=master)](https://travis-ci.org/paddor/em-simple_telnet?branch=master)
+[![Inline docs](http://inch-ci.org/github/paddor/em-simple_telnet.svg?branch=master&style=shields)](http://inch-ci.org/github/paddor/em-simple_telnet)
+
 # SimpleTelnet
 
 Provides telnet client functionality.
