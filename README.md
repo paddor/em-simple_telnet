@@ -53,8 +53,8 @@ and you have to handle authentication yourself.
 * uses lowercase Symbols (like `:host`) for options (instead of `"Host")
 * provides per connection logging for:
   * general activity (see `#logger`)
-  * output log (see the option `:output_log` and `#output_log`)
-  * commands sent (see the option `:command_log` and `#command_log`)
+  * output log (see the option `:output_log`, `#output_logger`, and `#output_log`)
+  * commands sent (see the option `:command_log`, `#command_logger`, and `#command_log`)
   * debug logging (if `logger.debug?`)
     * prints recently received data in a more human-friendly 0.5s interval, as
       opposed to single characters (because EventMachine is fast)
