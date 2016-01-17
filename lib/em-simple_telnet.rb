@@ -629,7 +629,7 @@ class SimpleTelnet::Connection < EventMachine::Connection
     when :listening
       @fiber_resumer.(buf)
     when :connected, :sleeping
-      logger.debug "#{node}: Discarding data that was received " +
+      logger.debug "#{host}: Discarding data that was received " +
         "while not waiting " +
         "for data (state = #{@connection_state.inspect}): #{buf.inspect}"
     else
@@ -728,14 +728,13 @@ class SimpleTelnet::Connection < EventMachine::Connection
     return result
   end
 
-  # Identifier for this connection. Like an IP address or hostname. In this
-  # case, it's <tt>@options[:host]</tt>.
+  # Hostname/address for this connection.
   # @return [String]
-  def node
+  def host
     @options[:host]
   end
 
-  # Listen for anything that's received from the node. Each received chunk
+  # Listen for anything that's received from the host. Each received chunk
   # will be yielded to the block passed. To make it stop listening, the block
   # should return or raise something.
   #
@@ -766,7 +765,7 @@ class SimpleTelnet::Connection < EventMachine::Connection
       "Can't send data: Connection is already closed." if closed?
     @last_data_sent_at = Time.now
     log_recently_received_data
-    logger.debug "#{node}: Sending #{s.inspect}"
+    logger.debug "#{host}: Sending #{s.inspect}"
     super
   end
 
@@ -943,7 +942,7 @@ class SimpleTelnet::Connection < EventMachine::Connection
   def unbind(reason)
     prev_conn_state = @connection_state
     self.connection_state = :closed
-    logger.debug "#{node}: Unbind reason: " + reason.inspect
+    logger.debug "#{host}: Unbind reason: " + reason.inspect
     @@_telnet_connection_count -= 1
     close_logs
 
@@ -966,7 +965,7 @@ class SimpleTelnet::Connection < EventMachine::Connection
     when :connecting
       @fiber_resumer.(ConnectionFailed.new)
     else
-      logger.error "#{node}: bad connection state #{prev_conn_state.inspect} " +
+      logger.error "#{host}: bad connection state #{prev_conn_state.inspect} " +
         "while unbinding"
     end
   end
@@ -1031,7 +1030,7 @@ class SimpleTelnet::Connection < EventMachine::Connection
   # @return [void]
   def log_recently_received_data
     return if @recently_received_data.empty? || !log_recently_received_data?
-    logger.debug "#{node}: Received: #{@recently_received_data.inspect}"
+    logger.debug "#{host}: Received: #{@recently_received_data.inspect}"
     @recently_received_data.clear
   end
 
