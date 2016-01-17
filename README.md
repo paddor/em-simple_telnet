@@ -142,3 +142,8 @@ There is a large number of RFCs relevant to the Telnet protocol.
 RFCs 854-861 define the base protocol.  For a complete listing
 of relevant RFCs, see
 http://www.omnifarious.org/~hopper/technical/telnet-rfc.html
+
+## License
+
+The gem is available as open source under the terms of the [ISC License](http://opensource.org/licenses/ISC).
+See the [LICENSE](https://github.com/paddor/em-simple_telnet/blob/master/LICENSE) file.
