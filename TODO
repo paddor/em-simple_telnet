@@ -4,6 +4,3 @@
     - Node
       - #connection_proxy
     - Migration (or better name)
-* new gem: em-telnet_server
-  * uses Simulators::Node
-  * factor login related stuff out to WithLogin
