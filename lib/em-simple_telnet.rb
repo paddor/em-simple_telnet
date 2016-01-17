@@ -153,6 +153,7 @@ class SimpleTelnet::Connection < EventMachine::Connection
     telnet_mode: true,
     output_log: nil,
     command_log: nil,
+    logger_class: Logger,
     login_prompt: %r{[Ll]ogin[: ]*\z}n,
     password_prompt: %r{[Pp]ass(?:word|phrase)[: ]*\z}n,
     username: nil,
@@ -342,6 +343,10 @@ class SimpleTelnet::Connection < EventMachine::Connection
   #   the name of the file to write the commands executed in this Telnet
   #   session.  Commands are appended to this file.  By default, no command
   #   log is kept.
+  #
+  # @option opts [Class] :logger_class (Logger)
+  #   the class used to create two logger instances which are used for output
+  #   and command logging.
   #
   # @option opts [Regexp, String] :prompt (%r{[$%#>] \z}n)
   #   a regular expression matching the host's command-line prompt sequence.
@@ -1059,12 +1064,12 @@ class SimpleTelnet::Connection < EventMachine::Connection
     @output_logger = @command_logger = nil
 
     if file = @options[:output_log]
-      @output_logger = Logger.new(file)
+      @output_logger = @options[:logger_class].new(file)
       @output_logger.info "# Starting telnet output log at #{Time.now}\n"
     end
 
     if file = @options[:command_log]
-      @command_logger = Logger.new(file)
+      @command_logger = @options[:logger_class].new(file)
     end
   end
 
